@@ -2,14 +2,33 @@ import yfinance as yf
 import pandas as pd
 import datetime
 import requests
+import os
+from pathlib import Path
 
 # ================= 配置区域 =================
 # 1. 你的基础定投金额 (例如：每次计划投 10000 元)
 BASE_AMOUNT = 10000 
 
-# 2. PushPlus Token (去 pushplus.plus 官网免费申请一个，填在这里)
+def _load_env_file(filename: str = ".env") -> None:
+    env_path = Path(__file__).resolve().parent / filename
+    if not env_path.exists():
+        return
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        os.environ.setdefault(key, value)
+
+
+_load_env_file()
+
+# 2. PushPlus Token (去 pushplus.plus 官网免费申请一个，填到 .env 里)
 # 如果留空，则只在电脑屏幕打印，不发送微信
-PUSHPLUS_TOKEN = "" 
+PUSHPLUS_TOKEN = os.getenv("PUSHPLUS_TOKEN", "").strip()
 
 # 3. 标的物 (QQQ 代表纳斯达克100 ETF)
 SYMBOL = "QQQ"
@@ -112,7 +131,7 @@ def main():
     dd_str = f"{data['drawdown']*100:.2f}%"
     
     # 构建消息内容
-    title = f"纳斯达克定投信号: {ratio}倍"
+    title = f"纳斯达克定投信号: {ratio}倍 买入{int(ratio*BASE_AMOUNT)}元"
     content = (
         f"📅 日期: {data['date']}<br>"
         f"💲 最新价格: ${data['price']}<br>"
