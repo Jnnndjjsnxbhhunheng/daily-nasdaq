@@ -1,0 +1,26 @@
+name: NASDAQ Daily Check
+
+on:
+  schedule:
+    # 北京时间每天早上 7:00 (UTC时间 23:00)
+    - cron: '0 23 * * *'
+  workflow_dispatch: # 允许手动点击按钮测试
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          pip install yfinance pandas requests
+
+      - name: Run strategy script
+        run: python main.py
