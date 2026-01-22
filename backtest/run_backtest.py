@@ -180,6 +180,66 @@ def _plot_total_return_bar(results: List[BacktestResult], out_path: str) -> None
     print(f">> Saved total return bar: {out_path}")
 
 
+def _plot_yearly_xirr_line_with_table(results: List[BacktestResult], out_path: str) -> None:
+    try:
+        import matplotlib.pyplot as plt
+    except ModuleNotFoundError:
+        print(">> Skip plot: missing dependency matplotlib (install: pip install matplotlib)")
+        return
+
+    parent = os.path.dirname(out_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+    years = sorted({y for r in results for y in r.yearly_xirr.keys()})
+    if not years:
+        print(">> Skip plot: no yearly_xirr data")
+        return
+
+    fig = plt.figure(figsize=(14, 8))
+    gs = fig.add_gridspec(nrows=2, ncols=1, height_ratios=[3, 2])
+    ax = fig.add_subplot(gs[0])
+    ax_table = fig.add_subplot(gs[1])
+    ax_table.axis("off")
+
+    for r in results:
+        ys = []
+        for y in years:
+            v = r.yearly_xirr.get(y)
+            ys.append(None if v is None else float(v) * 100.0)
+        ax.plot(years, ys, marker="o", linewidth=2, label=f"{r.strategy_key} ({r.symbol})")
+
+    ax.set_title("Yearly Annualized Return (XIRR)")
+    ax.set_xlabel("Year")
+    ax.set_ylabel("Annualized return (%)")
+    ax.grid(True, linestyle="--", alpha=0.3)
+    ax.legend()
+
+    col_labels = ["Year"] + [f"{r.strategy_key}\n({r.symbol})" for r in results]
+    cell_text = []
+    for y in years:
+        row = [str(y)]
+        for r in results:
+            v = r.yearly_xirr.get(y)
+            row.append("N/A" if v is None else f"{float(v)*100.0:.2f}%")
+        cell_text.append(row)
+
+    table = ax_table.table(
+        cellText=cell_text,
+        colLabels=col_labels,
+        loc="center",
+        cellLoc="center",
+        colLoc="center",
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(9)
+    table.scale(1, 1.2)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    print(f">> Saved yearly XIRR line+table: {out_path}")
+
+
 def _plot_trailing_3y_xirr_bar(results: List[BacktestResult], out_path: str) -> None:
     try:
         import matplotlib.pyplot as plt
@@ -287,6 +347,7 @@ def main() -> None:
         for r in results:
             _print_result(r)
         plot_dir = str(args.out_dir)
+        _plot_yearly_xirr_line_with_table(results, out_path=os.path.join(plot_dir, "yearly_xirr_compare.png"))
         _plot_total_return_bar(results, out_path=os.path.join(plot_dir, "total_return_compare.png"))
         _plot_trailing_3y_xirr_bar(results, out_path=os.path.join(plot_dir, "trailing_3y_xirr_compare.png"))
         return

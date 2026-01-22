@@ -59,6 +59,10 @@ python main.py
 
 ### 展示图
 
+每年年化（XIRR）对比折线 + 表格（图片内含近20年每年单年化）：
+
+![yearly_xirr_compare](backtest/yearly_xirr_compare.png)
+
 总收益率柱状对比：
 
 ![total_return_compare](backtest/total_return_compare.png)

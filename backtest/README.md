@@ -49,6 +49,8 @@ python -m backtest.run_backtest --strategy all --symbol QQQ --base-amount 10000 
 会在输出目录生成两张柱状对比图：
 - `total_return_compare.png`：总收益率（`final_value / total_invested - 1`）
 - `trailing_3y_xirr_compare.png`：近3年年化（`trailing_3y_xirr`）
+以及一张“每年年化（XIRR）对比折线 + 表格”：
+- `yearly_xirr_compare.png`：图片下半部分会列出近20年每年单年化
 
 如需生成图片，请先安装：
 
