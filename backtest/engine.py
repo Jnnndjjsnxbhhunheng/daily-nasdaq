@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Callable, List, Sequence, Tuple
+from typing import Callable, Dict, List, Sequence, Tuple
 
 
 Cashflow = Tuple[date, float]  # (date, amount); invest is negative, ending value is positive
@@ -17,6 +17,7 @@ class BacktestResult:
     total_invested: float
     final_value: float
     shares: float
+    yearly_xirr: Dict[int, float | None]
     trailing_3y_xirr: float | None
     full_period_xirr: float | None
 
@@ -71,6 +72,38 @@ def xirr(cashflows: Sequence[Cashflow]) -> float | None:
     return (lo + hi) / 2.0
 
 
+def yearly_xirr_from_cashflows(
+    *,
+    cashflows: Sequence[Cashflow],
+    daily_values: Sequence[Tuple[date, float]],
+) -> Dict[int, float | None]:
+    values_by_year: Dict[int, List[Tuple[date, float]]] = {}
+    for d, v in daily_values:
+        values_by_year.setdefault(d.year, []).append((d, float(v)))
+
+    cashflows_by_year: Dict[int, List[Cashflow]] = {}
+    for d, cf in cashflows:
+        cashflows_by_year.setdefault(d.year, []).append((d, float(cf)))
+
+    results: Dict[int, float | None] = {}
+    for y in sorted(values_by_year):
+        vals = values_by_year[y]
+        start_d, start_v = vals[0]
+        end_d, end_v = vals[-1]
+
+        cfs = list(cashflows_by_year.get(y, []))
+        cfs = [(d, cf) for d, cf in cfs if start_d <= d <= end_d]
+
+        if start_v == 0.0 and end_v == 0.0 and not cfs:
+            results[y] = None
+            continue
+
+        year_cfs: List[Cashflow] = [(start_d, -start_v)] + cfs + [(end_d, end_v)]
+        results[y] = xirr(year_cfs)
+
+    return results
+
+
 def monthly_invest_dates(trading_dates: Sequence[date], invest_day: int = 10) -> List[date]:
     if not trading_dates:
         return []
@@ -120,18 +153,21 @@ def backtest_monthly_dca_with_ratios(
     shares = 0.0
     cashflows: List[Cashflow] = []
     total_invested = 0.0
+    daily_values: List[Tuple[date, float]] = []
 
     for i, d in enumerate(dates):
+        px = float(closes[i])
+        daily_values.append((d, shares * px))
         if d not in invest_dates:
             continue
         ratio = float(ratio_for_index(i))
         amount = float(base_amount) * ratio
-        px = float(closes[i])
         if px <= 0:
             continue
         shares += amount / px
         total_invested += amount
         cashflows.append((d, -amount))
+        daily_values[-1] = (d, shares * px)
 
     end = dates[-1]
     final_value = shares * float(closes[-1])
@@ -143,6 +179,8 @@ def backtest_monthly_dca_with_ratios(
     trailing_cashflows = [(d, cf) for d, cf in cashflows if d >= trailing_start] + [(end, final_value)]
     trailing_xirr = xirr(trailing_cashflows)
 
+    yearly = yearly_xirr_from_cashflows(cashflows=cashflows, daily_values=daily_values)
+
     return BacktestResult(
         symbol=symbol,
         strategy_key=strategy_key,
@@ -151,6 +189,7 @@ def backtest_monthly_dca_with_ratios(
         total_invested=total_invested,
         final_value=final_value,
         shares=shares,
+        yearly_xirr=yearly,
         trailing_3y_xirr=trailing_xirr,
         full_period_xirr=full_xirr,
     )
@@ -180,11 +219,15 @@ def backtest_two_asset_dca_with_pool(
     shares_b = 0.0
     cashflows: List[Cashflow] = []
     total_invested = 0.0
+    daily_values: List[Tuple[date, float]] = []
 
     pool_remaining = float(annual_reserve_pool_usd)
     current_year = dates[0].year
 
     for i, d in enumerate(dates):
+        px_a_today = float(closes_a[i])
+        px_b_today = float(closes_b[i])
+        daily_values.append((d, shares_a * px_a_today + shares_b * px_b_today))
         if d.year != current_year:
             current_year = d.year
             pool_remaining = float(annual_reserve_pool_usd)
@@ -195,8 +238,8 @@ def backtest_two_asset_dca_with_pool(
         base_a = float(monthly_total_usd) * float(weights[0])
         base_b = float(monthly_total_usd) * float(weights[1])
 
-        px_a = float(closes_a[i])
-        px_b = float(closes_b[i])
+        px_a = px_a_today
+        px_b = px_b_today
         if px_a > 0:
             shares_a += base_a / px_a
         if px_b > 0:
@@ -229,6 +272,7 @@ def backtest_two_asset_dca_with_pool(
                 total_invested += extra_total
                 cashflows.append((d, -extra_total))
                 pool_remaining -= extra_total
+        daily_values[-1] = (d, shares_a * px_a + shares_b * px_b)
 
     end = dates[-1]
     final_value = shares_a * float(closes_a[-1]) + shares_b * float(closes_b[-1])
@@ -240,6 +284,8 @@ def backtest_two_asset_dca_with_pool(
     trailing_cashflows = [(d, cf) for d, cf in cashflows if d >= trailing_start] + [(end, final_value)]
     trailing_xirr = xirr(trailing_cashflows)
 
+    yearly = yearly_xirr_from_cashflows(cashflows=cashflows, daily_values=daily_values)
+
     return BacktestResult(
         symbol=",".join(symbols),
         strategy_key=strategy_key,
@@ -248,6 +294,7 @@ def backtest_two_asset_dca_with_pool(
         total_invested=total_invested,
         final_value=final_value,
         shares=shares_a + shares_b,
+        yearly_xirr=yearly,
         trailing_3y_xirr=trailing_xirr,
         full_period_xirr=full_xirr,
     )
