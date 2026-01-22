@@ -9,6 +9,10 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # Configure in GitHub repo: Settings -> Secrets and variables -> Actions -> New repository secret
+      # Name: PUSHPLUS_TOKEN
+      PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
