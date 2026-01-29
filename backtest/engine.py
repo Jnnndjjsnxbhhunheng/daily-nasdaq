@@ -133,6 +133,95 @@ def compute_ma250_drawdown_ratio(price: float, ma250: float, drawdown: float) ->
     return 1.0, "趋势向上/正常"
 
 
+def compute_multi_factor_score(
+    dd_6m: float,
+    dd_52w: float,
+    price: float,
+    ma200: float,
+    rsi: float,
+    vix: float | None,
+) -> float:
+    """
+    计算多因子信号总分（0-100）
+
+    信号权重：
+    - 6 个月回撤：25 分
+    - 52 周回撤：25 分
+    - 跌破 MA200：15 分
+    - RSI 超卖：15 分
+    - VIX 恐慌：20 分
+    """
+    score = 0.0
+
+    # 信号 1：6 个月回撤（权重 25）
+    dd_6m_pct = dd_6m * 100
+    if dd_6m_pct <= -8:
+        score += min(25, 5 + (abs(dd_6m_pct) - 8) * (20 / 22))
+
+    # 信号 2：52 周回撤（权重 25）
+    dd_52w_pct = dd_52w * 100
+    if dd_52w_pct <= -10:
+        score += min(25, 5 + (abs(dd_52w_pct) - 10) * (20 / 25))
+
+    # 信号 3：跌破 MA200（权重 15）
+    if price < ma200:
+        ma_diff_pct = abs((price - ma200) / ma200 * 100)
+        score += min(15, 8 + ma_diff_pct * 0.5)
+
+    # 信号 4：RSI 超卖（权重 15）
+    if rsi < 40:
+        score += min(15, 5 + (40 - rsi) * (10 / 20))
+
+    # 信号 5：VIX 恐慌（权重 20）
+    if vix is not None and vix > 20:
+        score += min(20, 5 + (vix - 20) * (15 / 20))
+
+    return score
+
+
+def multi_factor_tier(score: float, annual_pool: float, monthly_total: float) -> Tuple[float, float | None]:
+    """
+    根据信号分数返回（额外加码比例, 金池使用比例）
+
+    档位设计：
+    - 档位5（>=90分）：动用年度金池 60%
+    - 档位4（>=75分）：动用年度金池 35%
+    - 档位3（>=55分）：加码 100%
+    - 档位2（>=35分）：加码 50%
+    - 档位1（>=20分）：加码 25%
+    - 档位0（<20分）：不加码
+    """
+    if score >= 90:
+        return 0.0, 0.6
+    if score >= 75:
+        return 0.0, 0.35
+    if score >= 55:
+        return 1.0, None
+    if score >= 35:
+        return 0.5, None
+    if score >= 20:
+        return 0.25, None
+    return 0.0, None
+
+
+def dynamic_weights(score: float, base_weights: Tuple[float, float]) -> Tuple[float, float]:
+    """
+    根据信号分数动态调整权重
+
+    分数 > 70：VOO +15%
+    分数 > 50：VOO +10%
+    """
+    w_voo, w_qqq = base_weights
+    if score > 70:
+        shift = 0.15
+    elif score > 50:
+        shift = 0.10
+    else:
+        shift = 0.0
+    new_w_voo = min(0.7, w_voo + shift)
+    return (new_w_voo, 1.0 - new_w_voo)
+
+
 def backtest_monthly_dca_with_ratios(
     *,
     symbol: str,
@@ -272,6 +361,144 @@ def backtest_two_asset_dca_with_pool(
                 total_invested += extra_total
                 cashflows.append((d, -extra_total))
                 pool_remaining -= extra_total
+        daily_values[-1] = (d, shares_a * px_a + shares_b * px_b)
+
+    end = dates[-1]
+    final_value = shares_a * float(closes_a[-1]) + shares_b * float(closes_b[-1])
+    cashflows_end = cashflows + [(end, final_value)]
+
+    full_xirr = xirr(cashflows_end)
+
+    trailing_start = end - timedelta(days=int(trailing_years * 365.25))
+    trailing_cashflows = [(d, cf) for d, cf in cashflows if d >= trailing_start] + [(end, final_value)]
+    trailing_xirr = xirr(trailing_cashflows)
+
+    yearly = yearly_xirr_from_cashflows(cashflows=cashflows, daily_values=daily_values)
+
+    return BacktestResult(
+        symbol=",".join(symbols),
+        strategy_key=strategy_key,
+        start=dates[0],
+        end=end,
+        total_invested=total_invested,
+        final_value=final_value,
+        shares=shares_a + shares_b,
+        yearly_xirr=yearly,
+        trailing_3y_xirr=trailing_xirr,
+        full_period_xirr=full_xirr,
+    )
+
+
+def backtest_multi_factor_dca(
+    *,
+    symbols: Tuple[str, str],
+    strategy_key: str,
+    dates: Sequence[date],
+    closes_a: Sequence[float],
+    closes_b: Sequence[float],
+    ma200_a: Sequence[float],
+    ma200_b: Sequence[float],
+    dd_6m_a: Sequence[float],
+    dd_6m_b: Sequence[float],
+    dd_52w_a: Sequence[float],
+    dd_52w_b: Sequence[float],
+    rsi_a: Sequence[float],
+    rsi_b: Sequence[float],
+    vix: Sequence[float | None],
+    monthly_total_usd: float,
+    base_weights: Tuple[float, float] = (0.5, 0.5),
+    invest_day: int = 10,
+    annual_reserve_pool_usd: float = 5000,
+    trailing_years: int = 3,
+) -> BacktestResult:
+    """
+    多因子动态定投策略回测
+    """
+    n = len(dates)
+    if not all(len(seq) == n for seq in [closes_a, closes_b, ma200_a, ma200_b,
+                                          dd_6m_a, dd_6m_b, dd_52w_a, dd_52w_b,
+                                          rsi_a, rsi_b, vix]):
+        raise ValueError("series length mismatch")
+
+    invest_dates = set(monthly_invest_dates(dates, invest_day=invest_day))
+    shares_a = 0.0
+    shares_b = 0.0
+    cashflows: List[Cashflow] = []
+    total_invested = 0.0
+    daily_values: List[Tuple[date, float]] = []
+
+    pool_remaining = float(annual_reserve_pool_usd)
+    current_year = dates[0].year
+
+    for i, d in enumerate(dates):
+        px_a_today = float(closes_a[i])
+        px_b_today = float(closes_b[i])
+        daily_values.append((d, shares_a * px_a_today + shares_b * px_b_today))
+
+        if d.year != current_year:
+            current_year = d.year
+            pool_remaining = float(annual_reserve_pool_usd)
+
+        if d not in invest_dates:
+            continue
+
+        # 计算两个资产的信号分数
+        vix_i = vix[i]
+        score_a = compute_multi_factor_score(
+            dd_6m=float(dd_6m_a[i]),
+            dd_52w=float(dd_52w_a[i]),
+            price=float(closes_a[i]),
+            ma200=float(ma200_a[i]),
+            rsi=float(rsi_a[i]),
+            vix=vix_i,
+        )
+        score_b = compute_multi_factor_score(
+            dd_6m=float(dd_6m_b[i]),
+            dd_52w=float(dd_52w_b[i]),
+            price=float(closes_b[i]),
+            ma200=float(ma200_b[i]),
+            rsi=float(rsi_b[i]),
+            vix=vix_i,
+        )
+        max_score = max(score_a, score_b)
+
+        # 动态权重
+        weights = dynamic_weights(max_score, base_weights)
+
+        # 基础定投
+        base_a = float(monthly_total_usd) * float(weights[0])
+        base_b = float(monthly_total_usd) * float(weights[1])
+
+        px_a = px_a_today
+        px_b = px_b_today
+        if px_a > 0:
+            shares_a += base_a / px_a
+        if px_b > 0:
+            shares_b += base_b / px_b
+        total_invested += base_a + base_b
+        cashflows.append((d, -(base_a + base_b)))
+
+        # 加仓逻辑
+        extra_ratio, pool_ratio = multi_factor_tier(max_score, pool_remaining, monthly_total_usd)
+        extra_total = 0.0
+        if pool_ratio is not None:
+            extra_total = pool_remaining * pool_ratio
+        elif extra_ratio > 0:
+            extra_total = monthly_total_usd * extra_ratio
+
+        if extra_total > 0:
+            extra_total = min(extra_total, pool_remaining)
+            if extra_total > 0:
+                extra_a = extra_total * float(weights[0])
+                extra_b = extra_total * float(weights[1])
+                if px_a > 0:
+                    shares_a += extra_a / px_a
+                if px_b > 0:
+                    shares_b += extra_b / px_b
+                total_invested += extra_total
+                cashflows.append((d, -extra_total))
+                pool_remaining -= extra_total
+
         daily_values[-1] = (d, shares_a * px_a + shares_b * px_b)
 
     end = dates[-1]

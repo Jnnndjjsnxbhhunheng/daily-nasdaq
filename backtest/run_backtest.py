@@ -11,6 +11,7 @@ try:
         BacktestResult,
         backtest_monthly_dca_with_ratios,
         backtest_two_asset_dca_with_pool,
+        backtest_multi_factor_dca,
         compute_ma250_drawdown_ratio,
     )
 except ModuleNotFoundError:
@@ -18,6 +19,7 @@ except ModuleNotFoundError:
         BacktestResult,
         backtest_monthly_dca_with_ratios,
         backtest_two_asset_dca_with_pool,
+        backtest_multi_factor_dca,
         compute_ma250_drawdown_ratio,
     )
 
@@ -127,6 +129,76 @@ def _align_two_assets_and_vix(
     drawdown_b = [float(x) if x == x else 0.0 for x in df["dd_b"].tolist()]
     vix = [float(x) if x == x else None for x in df["vix"].tolist()]
     return dates, closes_a, closes_b, drawdown_a, drawdown_b, vix
+
+
+def _prepare_multi_factor_data(
+    sym_a: str,
+    sym_b: str,
+    vix_sym: str,
+    period: str,
+) -> dict:
+    """
+    准备多因子策略所需的所有数据
+    返回包含所有指标序列的字典
+    """
+    import pandas as pd
+
+    closes = _download_many([sym_a, sym_b, vix_sym], period=period)
+    a = closes[sym_a].rename("a")
+    b = closes[sym_b].rename("b")
+    v = closes[vix_sym].rename("vix")
+
+    df = pd.concat([a, b, v], axis=1)
+    df = df.dropna(subset=["a", "b"])
+    df["vix"] = df["vix"].ffill()
+
+    # MA200
+    df["ma200_a"] = df["a"].rolling(window=200).mean()
+    df["ma200_b"] = df["b"].rolling(window=200).mean()
+
+    # 6 个月回撤（126 交易日）
+    roll_max_6m_a = df["a"].rolling(window=126).max()
+    roll_max_6m_b = df["b"].rolling(window=126).max()
+    df["dd_6m_a"] = (df["a"] - roll_max_6m_a) / roll_max_6m_a
+    df["dd_6m_b"] = (df["b"] - roll_max_6m_b) / roll_max_6m_b
+
+    # 52 周回撤（250 交易日）
+    roll_max_52w_a = df["a"].rolling(window=250).max()
+    roll_max_52w_b = df["b"].rolling(window=250).max()
+    df["dd_52w_a"] = (df["a"] - roll_max_52w_a) / roll_max_52w_a
+    df["dd_52w_b"] = (df["b"] - roll_max_52w_b) / roll_max_52w_b
+
+    # RSI(14)
+    def calc_rsi(series, window=14):
+        delta = series.diff()
+        gain = delta.where(delta > 0, 0.0).rolling(window=window).mean()
+        loss = (-delta.where(delta < 0, 0.0)).rolling(window=window).mean()
+        rs = gain / loss.replace(0, 1e-10)
+        return 100 - (100 / (1 + rs))
+
+    df["rsi_a"] = calc_rsi(df["a"])
+    df["rsi_b"] = calc_rsi(df["b"])
+
+    # 需要至少 250 天数据才能计算所有指标
+    df = df.dropna(subset=["ma200_a", "ma200_b", "dd_52w_a", "dd_52w_b", "rsi_a", "rsi_b"])
+
+    def safe_float(x, default=0.0):
+        return float(x) if x == x else default
+
+    return {
+        "dates": list(df.index),
+        "closes_a": [float(x) for x in df["a"].tolist()],
+        "closes_b": [float(x) for x in df["b"].tolist()],
+        "ma200_a": [safe_float(x) for x in df["ma200_a"].tolist()],
+        "ma200_b": [safe_float(x) for x in df["ma200_b"].tolist()],
+        "dd_6m_a": [safe_float(x) for x in df["dd_6m_a"].tolist()],
+        "dd_6m_b": [safe_float(x) for x in df["dd_6m_b"].tolist()],
+        "dd_52w_a": [safe_float(x) for x in df["dd_52w_a"].tolist()],
+        "dd_52w_b": [safe_float(x) for x in df["dd_52w_b"].tolist()],
+        "rsi_a": [safe_float(x, 50.0) for x in df["rsi_a"].tolist()],
+        "rsi_b": [safe_float(x, 50.0) for x in df["rsi_b"].tolist()],
+        "vix": [safe_float(x) if x == x else None for x in df["vix"].tolist()],
+    }
 
 
 def _print_result(r: BacktestResult) -> None:
@@ -274,8 +346,8 @@ def main() -> None:
     p.add_argument(
         "--strategy",
         default="ma250_drawdown",
-        choices=["ma250_drawdown", "etf_dca_dip_buy", "all"],
-        help="Strategy key to backtest (use 'all' to run both and plot a comparison).",
+        choices=["ma250_drawdown", "etf_dca_dip_buy", "multi_factor_dca", "all"],
+        help="Strategy key to backtest (use 'all' to run all and plot a comparison).",
     )
     p.add_argument("--symbol", default="QQQ", help="For ma250_drawdown: data symbol (QQQ is a common Nasdaq-100 proxy).")
     p.add_argument(
@@ -342,8 +414,46 @@ def main() -> None:
             _print_result(result_dip)
             return
 
+    if args.strategy in ("multi_factor_dca", "all"):
+        sym_list = [s.strip() for s in str(args.symbols).split(",") if s.strip()]
+        if len(sym_list) != 2:
+            raise SystemExit("--symbols must contain exactly 2 symbols, e.g. SPY,QQQ")
+        w_list = [s.strip() for s in str(args.weights).split(",") if s.strip()]
+        if len(w_list) != 2:
+            raise SystemExit("--weights must contain exactly 2 numbers, e.g. 0.5,0.5")
+        w0, w1 = float(w_list[0]), float(w_list[1])
+        if w0 < 0 or w1 < 0 or abs((w0 + w1) - 1.0) > 1e-6:
+            raise SystemExit("--weights must be non-negative and sum to 1.0")
+
+        data = _prepare_multi_factor_data(sym_list[0], sym_list[1], "^VIX", period=args.period)
+        result_mf = backtest_multi_factor_dca(
+            symbols=(sym_list[0], sym_list[1]),
+            strategy_key=args.strategy,
+            dates=data["dates"],
+            closes_a=data["closes_a"],
+            closes_b=data["closes_b"],
+            ma200_a=data["ma200_a"],
+            ma200_b=data["ma200_b"],
+            dd_6m_a=data["dd_6m_a"],
+            dd_6m_b=data["dd_6m_b"],
+            dd_52w_a=data["dd_52w_a"],
+            dd_52w_b=data["dd_52w_b"],
+            rsi_a=data["rsi_a"],
+            rsi_b=data["rsi_b"],
+            vix=data["vix"],
+            monthly_total_usd=float(args.monthly_total),
+            base_weights=(w0, w1),
+            invest_day=args.invest_day,
+            annual_reserve_pool_usd=float(args.annual_pool),
+            trailing_years=3,
+        )
+        result_mf = replace(result_mf, strategy_key="multi_factor_dca")
+        if args.strategy == "multi_factor_dca":
+            _print_result(result_mf)
+            return
+
     if args.strategy == "all":
-        results = [result_ma, result_dip]  # type: ignore[name-defined]
+        results = [result_ma, result_dip, result_mf]  # type: ignore[name-defined]
         for r in results:
             _print_result(r)
         plot_dir = str(args.out_dir)
