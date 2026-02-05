@@ -73,7 +73,7 @@ python main.py
 
 - `pip install yfinance pandas matplotlib`
 
-运行两个策略（分别执行两次）：
+运行三个策略（分别执行三次）：
 
 - `python -m backtest.run_backtest --strategy ma150_drawdown --symbol QQQ --base-amount 10000 --invest-day 10 --period 20y`
   - QQQ 均线（MA150）+ 回撤加码策略
@@ -98,6 +98,6 @@ python main.py
 
 ![total_return_compare](backtest/total_return_compare.png)
 
-近三年三年化（XIRR）柱状对比：
+近三年年化（XIRR）柱状对比：
 
 ![trailing_3y_xirr_compare](backtest/trailing_3y_xirr_compare.png)
