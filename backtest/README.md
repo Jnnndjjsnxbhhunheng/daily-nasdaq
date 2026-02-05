@@ -20,15 +20,21 @@ python -m backtest.run_backtest --strategy ma250_drawdown --symbol QQQ --base-am
 说明：
 - `--invest-day` 为每月定投的“日”（1..28），会自动匹配到当月第一个 `day>=invest-day` 的交易日。
 
-## 回测两个策略
+## 回测三个策略
 
-1) `ma250_drawdown`（单标的，原策略）
+1) `ma150_drawdown`（单标的，均线改为 MA150）
+
+```bash
+python -m backtest.run_backtest --strategy ma150_drawdown --symbol QQQ --base-amount 10000 --invest-day 10 --period 20y
+```
+
+2) `ma250_drawdown`（单标的，原策略）
 
 ```bash
 python -m backtest.run_backtest --strategy ma250_drawdown --symbol QQQ --base-amount 10000 --invest-day 10 --period 20y
 ```
 
-2) `etf_dca_dip_buy`（双标的：每月定投 + 下跌分档加仓）
+3) `etf_dca_dip_buy`（双标的：每月定投 + 下跌分档加仓）
 
 由于 `VOO/QQQM` 上市时间不够 20 年，回测默认使用长历史代理：
 - `SPY` 代理 `VOO`
@@ -40,7 +46,7 @@ python -m backtest.run_backtest --strategy etf_dca_dip_buy --symbols SPY,QQQ --m
 
 ## 对比图（柱状）
 
-一次性跑两个策略并生成对比柱状图：
+一次性跑三个策略并生成对比柱状图：
 
 ```bash
 python -m backtest.run_backtest --strategy all --symbol QQQ --base-amount 10000 --symbols SPY,QQQ --monthly-total 900 --annual-pool 4000 --weights 0.5,0.5 --invest-day 10 --period 20y --out-dir backtest
@@ -57,3 +63,5 @@ python -m backtest.run_backtest --strategy all --symbol QQQ --base-amount 10000 
 ```bash
 pip install matplotlib
 ```
+
+注：如果对比图与代码不一致（例如新增/调整策略），请在可联网环境重新运行一次 `--strategy all` 覆盖生成图片。

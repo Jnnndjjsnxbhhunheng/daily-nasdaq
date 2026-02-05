@@ -30,6 +30,7 @@ _load_env_file()
 PUSHPLUS_TOKEN = os.getenv("PUSHPLUS_TOKEN", "").strip()
 
 # 3. 选择策略
+# - ma150_drawdown: QQQ 150日均线+回撤策略
 # - ma250_drawdown: 原本的 QQQ 年线+回撤策略
 # - etf_dca_dip_buy: VOO+QQQM 每月定投 + 下跌分档加仓策略
 STRATEGY_KEY = os.getenv("STRATEGY", "ma250_drawdown").strip() or "ma250_drawdown"
@@ -62,7 +63,7 @@ def main():
         print(f"Available strategies: {', '.join(sorted(list_strategies()))}")
         return
 
-    if STRATEGY_KEY == "ma250_drawdown":
+    if STRATEGY_KEY in {"ma250_drawdown", "ma150_drawdown"}:
         result = runner(base_amount=BASE_AMOUNT, symbol=os.getenv("SYMBOL", "QQQ").strip() or "QQQ")
     else:
         result = runner()

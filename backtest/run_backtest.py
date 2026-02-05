@@ -11,14 +11,14 @@ try:
         BacktestResult,
         backtest_monthly_dca_with_ratios,
         backtest_two_asset_dca_with_pool,
-        compute_ma250_drawdown_ratio,
+        compute_ma_drawdown_ratio,
     )
 except ModuleNotFoundError:
     from engine import (  # type: ignore
         BacktestResult,
         backtest_monthly_dca_with_ratios,
         backtest_two_asset_dca_with_pool,
-        compute_ma250_drawdown_ratio,
+        compute_ma_drawdown_ratio,
     )
 
 
@@ -37,26 +37,31 @@ def _download_one(symbol: str, period: str = "20y") -> Tuple[List[date], List[fl
     return dates, closes
 
 
-def _ratio_series_ma250_drawdown(dates: List[date], closes: List[float]) -> List[float]:
+def _ratio_series_ma_drawdown(dates: List[date], closes: List[float], ma_days: int) -> List[float]:
     try:
         import pandas as pd
     except ModuleNotFoundError as e:
         raise SystemExit("Missing dependency: pandas (install: pip install pandas)") from e
 
     s = pd.Series(closes, index=pd.to_datetime(dates))
-    ma250 = s.rolling(window=250).mean()
+    ma_days = int(ma_days)
+    if ma_days <= 0:
+        raise ValueError("ma_days should be positive")
+
+    ma = s.rolling(window=ma_days).mean()
     high_250 = s.rolling(window=250).max()
     drawdown = (s - high_250) / high_250
 
     ratios: List[float] = []
     for i in range(len(s)):
-        if i < 250 or pd.isna(ma250.iat[i]) or pd.isna(drawdown.iat[i]):
+        if i < max(250, ma_days) or pd.isna(ma.iat[i]) or pd.isna(drawdown.iat[i]):
             ratios.append(1.0)
             continue
-        r, _reason = compute_ma250_drawdown_ratio(
+        r, _reason = compute_ma_drawdown_ratio(
             price=float(s.iat[i]),
-            ma250=float(ma250.iat[i]),
+            ma=float(ma.iat[i]),
             drawdown=float(drawdown.iat[i]),
+            ma_days=ma_days,
         )
         ratios.append(r)
     return ratios
@@ -183,6 +188,7 @@ def _plot_total_return_bar(results: List[BacktestResult], out_path: str) -> None
 def _plot_yearly_xirr_line_with_table(results: List[BacktestResult], out_path: str) -> None:
     try:
         import matplotlib.pyplot as plt
+        from matplotlib.colors import to_rgba
     except ModuleNotFoundError:
         print(">> Skip plot: missing dependency matplotlib (install: pip install matplotlib)")
         return
@@ -196,8 +202,8 @@ def _plot_yearly_xirr_line_with_table(results: List[BacktestResult], out_path: s
         print(">> Skip plot: no yearly_xirr data")
         return
 
-    fig = plt.figure(figsize=(14, 8))
-    gs = fig.add_gridspec(nrows=2, ncols=1, height_ratios=[3, 2])
+    fig = plt.figure(figsize=(14, 9))
+    gs = fig.add_gridspec(nrows=2, ncols=1, height_ratios=[3, 2.6])
     ax = fig.add_subplot(gs[0])
     ax_table = fig.add_subplot(gs[1])
     ax_table.axis("off")
@@ -217,23 +223,101 @@ def _plot_yearly_xirr_line_with_table(results: List[BacktestResult], out_path: s
 
     col_labels = ["Year"] + [f"{r.strategy_key}\n({r.symbol})" for r in results]
     cell_text = []
+    best_cols: List[int | None] = []
+    values_matrix: List[List[float | None]] = []
     for y in years:
         row = [str(y)]
+        vals_pct: List[float | None] = []
         for r in results:
             v = r.yearly_xirr.get(y)
-            row.append("N/A" if v is None else f"{float(v)*100.0:.2f}%")
+            vp = None if v is None else float(v) * 100.0
+            vals_pct.append(vp)
+            row.append("—" if vp is None else f"{vp:+.2f}%")
         cell_text.append(row)
+        values_matrix.append(list(vals_pct))
+        best = max((v for v in vals_pct if v is not None), default=None)
+        best_cols.append(None if best is None else (1 + vals_pct.index(best)))
 
+    year_col_w = 0.12
+    other_w = (1.0 - year_col_w) / max(1, len(results))
+    col_widths = [year_col_w] + [other_w] * len(results)
     table = ax_table.table(
         cellText=cell_text,
         colLabels=col_labels,
-        loc="center",
+        bbox=[0.02, 0.0, 0.96, 1.0],
         cellLoc="center",
         colLoc="center",
+        colWidths=col_widths,
     )
     table.auto_set_font_size(False)
     table.set_fontsize(9)
-    table.scale(1, 1.2)
+    table.scale(1, 1.3)
+
+    header_bg = "#1f2937"
+    header_fg = "#ffffff"
+    row_bg_even = "#f6f8fa"
+    row_bg_odd = "#ffffff"
+    text_pos = "#0b6e4f"
+    text_neg = "#b00020"
+    text_na = "#6b7280"
+    text_default = "#111827"
+    border = "#d1d5db"
+
+    flat_vals = [v for row in values_matrix for v in row if v is not None]
+    max_abs = max((abs(v) for v in flat_vals), default=0.0) or 1.0
+    pos_bg = "#86efac"
+    neg_bg = "#fca5a5"
+    best_accent = "#22c55e"
+
+    def _blend(base_hex: str, overlay_hex: str, alpha: float) -> tuple[float, float, float, float]:
+        br, bg, bb, ba = to_rgba(base_hex)
+        or_, og, ob, oa = to_rgba(overlay_hex)
+        a = max(0.0, min(1.0, float(alpha)))
+        return (
+            (1 - a) * br + a * or_,
+            (1 - a) * bg + a * og,
+            (1 - a) * bb + a * ob,
+            1.0,
+        )
+
+    for (row_i, col_i), cell in table.get_celld().items():
+        cell.set_edgecolor(border)
+        cell.set_linewidth(0.5)
+        cell.PAD = 0.015
+
+        if row_i == 0:
+            cell.set_facecolor(header_bg)
+            cell.get_text().set_color(header_fg)
+            cell.get_text().set_weight("bold")
+            continue
+
+        base_bg = row_bg_even if (row_i % 2 == 0) else row_bg_odd
+        cell.set_facecolor(base_bg)
+
+        if col_i == 0:
+            cell.get_text().set_weight("bold")
+            cell.get_text().set_color(text_default)
+        else:
+            v = values_matrix[row_i - 1][col_i - 1] if (row_i - 1) < len(values_matrix) else None
+            if v is None:
+                cell.get_text().set_color(text_na)
+            else:
+                overlay = pos_bg if v >= 0 else neg_bg
+                strength = min(0.55, 0.10 + 0.45 * (abs(v) / max_abs))
+                cell.set_facecolor(_blend(base_bg, overlay, strength))
+                if v > 0:
+                    cell.get_text().set_color(text_pos)
+                elif v < 0:
+                    cell.get_text().set_color(text_neg)
+                else:
+                    cell.get_text().set_color(text_default)
+
+        best_col = best_cols[row_i - 1] if (0 <= row_i - 1 < len(best_cols)) else None
+        if best_col is not None and col_i == best_col:
+            cell.set_facecolor(_blend(cell.get_facecolor(), best_accent, 0.22))
+            cell.get_text().set_weight("bold")
+            cell.set_linewidth(1.2)
+            cell.set_edgecolor("#10b981")
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
@@ -274,16 +358,25 @@ def main() -> None:
     p.add_argument(
         "--strategy",
         default="ma250_drawdown",
-        choices=["ma250_drawdown", "etf_dca_dip_buy", "all"],
-        help="Strategy key to backtest (use 'all' to run both and plot a comparison).",
+        choices=["ma250_drawdown", "ma150_drawdown", "etf_dca_dip_buy", "all"],
+        help="Strategy key to backtest (use 'all' to run all and plot a comparison).",
     )
-    p.add_argument("--symbol", default="QQQ", help="For ma250_drawdown: data symbol (QQQ is a common Nasdaq-100 proxy).")
+    p.add_argument(
+        "--symbol",
+        default="QQQ",
+        help="For ma250_drawdown/ma150_drawdown: data symbol (QQQ is a common Nasdaq-100 proxy).",
+    )
     p.add_argument(
         "--symbols",
         default="SPY,QQQ",
         help="For etf_dca_dip_buy: two symbols, comma-separated (defaults to SPY,QQQ as long-history proxies for VOO/QQQM).",
     )
-    p.add_argument("--base-amount", type=float, default=10000, help="For ma250_drawdown: base monthly contribution amount.")
+    p.add_argument(
+        "--base-amount",
+        type=float,
+        default=10000,
+        help="For ma250_drawdown/ma150_drawdown: base monthly contribution amount.",
+    )
     p.add_argument("--monthly-total", type=float, default=900, help="For etf_dca_dip_buy: total monthly DCA amount in USD.")
     p.add_argument("--annual-pool", type=float, default=4000, help="For etf_dca_dip_buy: annual reserve pool in USD (reset each year).")
     p.add_argument("--weights", default="0.5,0.5", help="For etf_dca_dip_buy: weights, comma-separated (e.g. 0.6,0.4).")
@@ -292,22 +385,37 @@ def main() -> None:
     p.add_argument("--out-dir", default="backtest", help="Output directory for comparison charts (all-mode).")
     args = p.parse_args()
 
-    if args.strategy in ("ma250_drawdown", "all"):
+    if args.strategy in ("ma250_drawdown", "ma150_drawdown", "all"):
         dates, closes = _download_one(args.symbol, period=args.period)
-        ratios = _ratio_series_ma250_drawdown(dates, closes)
-        result_ma = backtest_monthly_dca_with_ratios(
+        ratios_250 = _ratio_series_ma_drawdown(dates, closes, ma_days=250)
+        result_ma250 = backtest_monthly_dca_with_ratios(
             symbol=args.symbol,
-            strategy_key=args.strategy,
+            strategy_key="ma250_drawdown",
             dates=dates,
             closes=closes,
-            ratio_for_index=lambda i: ratios[i],
+            ratio_for_index=lambda i: ratios_250[i],
             base_amount=args.base_amount,
             invest_day=args.invest_day,
             trailing_years=3,
         )
-        result_ma = replace(result_ma, strategy_key="ma250_drawdown")
+
+        ratios_150 = _ratio_series_ma_drawdown(dates, closes, ma_days=150)
+        result_ma150 = backtest_monthly_dca_with_ratios(
+            symbol=args.symbol,
+            strategy_key="ma150_drawdown",
+            dates=dates,
+            closes=closes,
+            ratio_for_index=lambda i: ratios_150[i],
+            base_amount=args.base_amount,
+            invest_day=args.invest_day,
+            trailing_years=3,
+        )
+
         if args.strategy == "ma250_drawdown":
-            _print_result(result_ma)
+            _print_result(result_ma250)
+            return
+        if args.strategy == "ma150_drawdown":
+            _print_result(result_ma150)
             return
 
     if args.strategy in ("etf_dca_dip_buy", "all"):
@@ -343,7 +451,7 @@ def main() -> None:
             return
 
     if args.strategy == "all":
-        results = [result_ma, result_dip]  # type: ignore[name-defined]
+        results = [result_ma250, result_ma150, result_dip]  # type: ignore[name-defined]
         for r in results:
             _print_result(r)
         plot_dir = str(args.out_dir)

@@ -124,12 +124,16 @@ def monthly_invest_dates(trading_dates: Sequence[date], invest_day: int = 10) ->
 
 
 def compute_ma250_drawdown_ratio(price: float, ma250: float, drawdown: float) -> Tuple[float, str]:
+    return compute_ma_drawdown_ratio(price=price, ma=ma250, drawdown=drawdown, ma_days=250)
+
+
+def compute_ma_drawdown_ratio(*, price: float, ma: float, drawdown: float, ma_days: int) -> Tuple[float, str]:
     if drawdown <= -0.30:
         return 5.0, "极度恐慌(回撤<=30%)"
     if drawdown <= -0.20:
         return 3.0, "深度回调(回撤<=20%)"
-    if price < ma250:
-        return 2.0, "跌破年线(MA250)"
+    if price < ma:
+        return 2.0, f"跌破均线(MA{int(ma_days)})"
     return 1.0, "趋势向上/正常"
 
 

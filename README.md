@@ -25,6 +25,15 @@
 
 在 `.env` 里设置 `STRATEGY`：
 
+- `STRATEGY=ma150_drawdown`：QQQ 均线（MA150）+ 回撤分档加码
+  - 数据：取 QQQ 近 2 年日线计算 MA150；同时取近 250 个交易日最高点计算回撤
+  - 加码规则（从极端到正常依次匹配）：
+    - 回撤 ≤ -30%：`5x` 基准定投额
+    - 回撤 ≤ -20%：`3x` 基准定投额
+    - 跌破 MA150：`2x` 基准定投额
+    - 其他：`1x` 正常定投
+  - 输出：给出当前价格、MA150、回撤百分比，以及建议买入金额
+
 - `STRATEGY=ma250_drawdown`：QQQ 年线（MA250）+ 回撤分档加码（默认）
   - 数据：取 QQQ 近 2 年日线计算 MA250；同时取近 250 个交易日最高点计算回撤
   - 加码规则（从极端到正常依次匹配）：
@@ -66,16 +75,20 @@ python main.py
 
 运行两个策略（分别执行两次）：
 
+- `python -m backtest.run_backtest --strategy ma150_drawdown --symbol QQQ --base-amount 10000 --invest-day 10 --period 20y`
+  - QQQ 均线（MA150）+ 回撤加码策略
 - `python -m backtest.run_backtest --strategy ma250_drawdown --symbol QQQ --base-amount 10000 --invest-day 10 --period 20y`
   - 原本的 QQQ 年线（MA250）+ 回撤加码策略
 - `python -m backtest.run_backtest --strategy etf_dca_dip_buy --symbols SPY,QQQ --monthly-total 900 --annual-pool 4000 --weights 0.5,0.5 --invest-day 10 --period 20y`
   - VOO+QQQM 的定投+下跌加仓策略（回测默认用 `SPY,QQQ` 代理 `VOO,QQQM`，因为后者历史不足20年）
 
-一次跑完两个策略并生成对比图（输出目录默认 `backtest/`）：
+一次跑完三个策略并生成对比图（输出目录默认 `backtest/`）：
 
 - `python -m backtest.run_backtest --strategy all --symbol QQQ --base-amount 10000 --symbols SPY,QQQ --monthly-total 900 --annual-pool 4000 --weights 0.5,0.5 --invest-day 10 --period 20y --out-dir backtest`
 
 ### 展示图
+
+注：本仓库自带的对比图可能会因为策略更新而过期；可在可联网环境运行一次 `--strategy all` 重新生成图片覆盖到 `backtest/`。
 
 每年年化（XIRR）对比折线 + 表格（图片内含近20年每年单年化）：
 
