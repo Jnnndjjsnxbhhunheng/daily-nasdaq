@@ -97,4 +97,18 @@ python -m backtest.run_backtest --strategy all --symbol QQQ --base-amount 10000 
 - `backtest/total_return_compare.png`
 - `backtest/trailing_3y_xirr_compare.png`
 
+### 回测图展示
+
+每年年化（XIRR）对比折线 + 表格：
+
+![yearly_xirr_compare](backtest/yearly_xirr_compare.png)
+
+总收益率柱状对比：
+
+![total_return_compare](backtest/total_return_compare.png)
+
+近三年年化（XIRR）柱状对比：
+
+![trailing_3y_xirr_compare](backtest/trailing_3y_xirr_compare.png)
+
 > 注：Yahoo 数据源可能出现限流（`YFRateLimitError`），如遇到可稍后重试。
