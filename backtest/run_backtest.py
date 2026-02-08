@@ -226,6 +226,117 @@ def _ratio_series_discount_dca(dates: List[date], closes: List[float]) -> List[f
     return ratios
 
 
+def _ratio_series_ma_cross_sell(dates: List[date], closes: List[float]) -> List[float]:
+    try:
+        import pandas as pd
+    except ModuleNotFoundError as e:
+        raise SystemExit("Missing dependency: pandas (install: pip install pandas)") from e
+
+    s = pd.Series(closes, index=pd.to_datetime(dates))
+    ma200 = s.rolling(window=200).mean()
+    high_250 = s.rolling(window=250).max()
+    drawdown = (s - high_250) / high_250
+
+    ratios: List[float] = []
+    for i in range(len(s)):
+        if i < 251 or pd.isna(ma200.iat[i]) or pd.isna(ma200.iat[i - 1]):
+            ratios.append(0.0)
+            continue
+        prev_price = float(s.iat[i - 1])
+        prev_ma = float(ma200.iat[i - 1])
+        price = float(s.iat[i])
+        ma = float(ma200.iat[i])
+        dd = float(drawdown.iat[i]) if not pd.isna(drawdown.iat[i]) else 0.0
+
+        crossed_up = prev_price <= prev_ma and price > ma
+        crossed_down = prev_price >= prev_ma and price < ma
+
+        if crossed_up:
+            ratios.append(2.0 if dd <= -0.20 else 1.0)
+        elif crossed_down:
+            ratios.append(0.0)
+        else:
+            ratios.append(0.0)
+    return ratios
+
+
+def _ratio_series_macd_weekly(dates: List[date], closes: List[float]) -> List[float]:
+    try:
+        import pandas as pd
+    except ModuleNotFoundError as e:
+        raise SystemExit("Missing dependency: pandas (install: pip install pandas)") from e
+
+    daily = pd.Series(closes, index=pd.to_datetime(dates))
+    weekly = daily.resample("W-FRI").last().dropna()
+    ema12 = weekly.ewm(span=12, adjust=False).mean()
+    ema26 = weekly.ewm(span=26, adjust=False).mean()
+    macd = ema12 - ema26
+    signal = macd.ewm(span=9, adjust=False).mean()
+
+    weekly_state = pd.DataFrame({"macd": macd, "signal": signal})
+    weekly_state["prev_macd"] = weekly_state["macd"].shift(1)
+    weekly_state["prev_signal"] = weekly_state["signal"].shift(1)
+    weekly_state = weekly_state.reindex(daily.index, method="ffill")
+
+    ratios: List[float] = []
+    for i in range(len(daily)):
+        row = weekly_state.iloc[i]
+        if row.isna().any():
+            ratios.append(0.0)
+            continue
+        macd_i = float(row["macd"])
+        signal_i = float(row["signal"])
+        prev_macd = float(row["prev_macd"])
+        prev_signal = float(row["prev_signal"])
+
+        crossed_up = prev_macd <= prev_signal and macd_i > signal_i
+        crossed_down = prev_macd >= prev_signal and macd_i < signal_i
+
+        if crossed_up:
+            ratios.append(1.0)
+        elif crossed_down:
+            ratios.append(0.0)
+        elif macd_i > signal_i:
+            ratios.append(1.0)
+        else:
+            ratios.append(0.0)
+    return ratios
+
+
+def _ratio_series_rsi_reversion(dates: List[date], closes: List[float]) -> List[float]:
+    try:
+        import pandas as pd
+    except ModuleNotFoundError as e:
+        raise SystemExit("Missing dependency: pandas (install: pip install pandas)") from e
+
+    s = pd.Series(closes, index=pd.to_datetime(dates))
+    delta = s.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+
+    high_250 = s.rolling(window=250).max()
+    drawdown = (s - high_250) / high_250
+
+    ratios: List[float] = []
+    for i in range(len(s)):
+        if pd.isna(rsi.iat[i]):
+            ratios.append(0.0)
+            continue
+        rsi_i = float(rsi.iat[i])
+        dd = float(drawdown.iat[i]) if not pd.isna(drawdown.iat[i]) else 0.0
+        if rsi_i <= 30:
+            ratios.append(2.0 if dd <= -0.20 else 1.0)
+        elif rsi_i >= 70:
+            ratios.append(0.0)
+        else:
+            ratios.append(0.0)
+    return ratios
+
+
 def _market_breadth_backtest_series(symbol: str, period: str) -> Tuple[List[date], List[float], List[float]]:
     try:
         import pandas as pd
@@ -642,8 +753,11 @@ def main() -> None:
             "ma250_drawdown",
             "ma200_drawdown",
             "ma150_drawdown",
+            "ma_cross_sell",
+            "macd_weekly",
             "discount_dca",
             "market_breadth_dca",
+            "rsi_reversion",
             "plain_dca",
             "etf_dca_dip_buy",
             "all",
@@ -678,8 +792,11 @@ def main() -> None:
         "ma250_drawdown",
         "ma200_drawdown",
         "ma150_drawdown",
+        "ma_cross_sell",
+        "macd_weekly",
         "discount_dca",
         "market_breadth_dca",
+        "rsi_reversion",
         "plain_dca",
     }
     need_single_symbol = args.strategy in single_symbol_keys or args.strategy == "all"
@@ -702,7 +819,10 @@ def main() -> None:
             drawdown_3x=-0.15,
         )
         ratios_150 = _ratio_series_ma_drawdown(dates, closes, ma_days=150)
+        ratios_ma_cross = _ratio_series_ma_cross_sell(dates, closes)
+        ratios_macd = _ratio_series_macd_weekly(dates, closes)
         ratios_discount = _ratio_series_discount_dca(dates, closes)
+        ratios_rsi = _ratio_series_rsi_reversion(dates, closes)
 
         result_map["ma250_drawdown"] = backtest_monthly_dca_with_ratios(
             symbol=args.symbol,
@@ -734,6 +854,24 @@ def main() -> None:
             invest_day=args.invest_day,
             trailing_years=3,
         )
+        result_map["ma_cross_sell"] = backtest_daily_dca_with_ratios(
+            symbol=args.symbol,
+            strategy_key="ma_cross_sell",
+            dates=dates,
+            closes=closes,
+            ratio_for_index=lambda i: ratios_ma_cross[i],
+            base_amount=args.base_amount,
+            trailing_years=3,
+        )
+        result_map["macd_weekly"] = backtest_daily_dca_with_ratios(
+            symbol=args.symbol,
+            strategy_key="macd_weekly",
+            dates=dates,
+            closes=closes,
+            ratio_for_index=lambda i: ratios_macd[i],
+            base_amount=args.base_amount,
+            trailing_years=3,
+        )
         result_map["discount_dca"] = backtest_monthly_dca_with_ratios(
             symbol=args.symbol,
             strategy_key="discount_dca",
@@ -742,6 +880,15 @@ def main() -> None:
             ratio_for_index=lambda i: ratios_discount[i],
             base_amount=args.base_amount,
             invest_day=args.invest_day,
+            trailing_years=3,
+        )
+        result_map["rsi_reversion"] = backtest_daily_dca_with_ratios(
+            symbol=args.symbol,
+            strategy_key="rsi_reversion",
+            dates=dates,
+            closes=closes,
+            ratio_for_index=lambda i: ratios_rsi[i],
+            base_amount=args.base_amount,
             trailing_years=3,
         )
 
@@ -815,8 +962,11 @@ def main() -> None:
             "ma250_drawdown",
             "ma200_drawdown",
             "ma150_drawdown",
+            "ma_cross_sell",
+            "macd_weekly",
             "discount_dca",
             "market_breadth_dca",
+            "rsi_reversion",
             "plain_dca",
             "etf_dca_dip_buy",
         ]

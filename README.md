@@ -16,7 +16,7 @@
 - 运行 `python main.py` 后，如果配置了 `PUSHPLUS_TOKEN`，会自动推送一次
 - 如果未配置 token，只在控制台打印
 
-## 策略列表（共 7 种）
+## 策略列表（共 10 种）
 
 在 `.env` 中设置 `STRATEGY=`：
 
@@ -32,18 +32,30 @@
 - 数据：QQQ 近 2 年日线，MA150 + 近 250 交易日回撤
 - 规则：`dd<=-30% -> 5x`；`dd<=-20% -> 3x`；`price<MA150 -> 2x`；否则 `1x`
 
-4) `discount_dca`
+4) `ma_cross_sell`
+- 数据：QQQ 日线 MA200（默认）
+- 规则：收盘价上穿 MA200 -> 买入；下穿 MA200 -> 卖出；若回撤 `<=-20%` 时买入可加倍
+
+5) `macd_weekly`
+- 数据：QQQ 周线 MACD（12,26,9）
+- 规则：MACD 上穿信号线 -> 买入；下穿 -> 卖出/减仓；其余持有
+
+6) `discount_dca`
 - 数据：QQQ 近 1 年日线，近 20 周高点折扣 + MA50
 - 规则：`discount<=-20% -> 4x`；`discount<=-10% -> 2x`；`price<MA50 -> 1.5x`；否则 `1x`
 
-5) `market_breadth_dca`
+7) `market_breadth_dca`
 - 数据：QQQ + Nasdaq100 成分股，计算成分股低于 MA20 比例（宽度）
 - 规则：`dd<=-30% -> 5x`；`breadth<=25% -> 3x`；`dd<=-10% -> 2x`；否则 `1x`
 
-6) `plain_dca`
+8) `rsi_reversion`
+- 数据：QQQ 日线 RSI(14) + 近250日回撤
+- 规则：`RSI<=30 -> 买入`（若回撤 `<=-20%` 则 `2x`）；`RSI>=70 -> 卖出`；其余持有
+
+9) `plain_dca`
 - 最普通定投：固定 `1x`，不做择时
 
-7) `etf_dca_dip_buy`
+10) `etf_dca_dip_buy`
 - VOO+QQQM（或回测中 SPY+QQQ 代理）每月定投 + 跌幅/VIX 分档加仓
 
 ### 策略规则总览图
@@ -80,7 +92,10 @@ pip install yfinance pandas matplotlib
 
 ```bash
 python -m backtest.run_backtest --strategy ma200_drawdown --symbol QQQ --base-amount 10000 --invest-day 10 --period 20y
+python -m backtest.run_backtest --strategy ma_cross_sell --symbol QQQ --base-amount 10000 --invest-day 10 --period 20y
+python -m backtest.run_backtest --strategy macd_weekly --symbol QQQ --base-amount 10000 --invest-day 10 --period 20y
 python -m backtest.run_backtest --strategy discount_dca --symbol QQQ --base-amount 10000 --invest-day 10 --period 20y
+python -m backtest.run_backtest --strategy rsi_reversion --symbol QQQ --base-amount 10000 --invest-day 10 --period 20y
 python -m backtest.run_backtest --strategy market_breadth_dca --symbol QQQ --base-amount 10000 --invest-day 10 --period 20y
 python -m backtest.run_backtest --strategy plain_dca --symbol QQQ --base-amount 10000 --period 20y
 python -m backtest.run_backtest --strategy etf_dca_dip_buy --symbols SPY,QQQ --monthly-total 900 --annual-pool 4000 --weights 0.5,0.5 --invest-day 10 --period 20y
