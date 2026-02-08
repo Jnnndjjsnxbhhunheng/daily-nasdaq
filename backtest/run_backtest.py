@@ -4,11 +4,12 @@ import argparse
 from dataclasses import replace
 from datetime import date
 import os
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 try:
     from backtest.engine import (
         BacktestResult,
+        backtest_daily_dca_with_ratios,
         backtest_monthly_dca_with_ratios,
         backtest_two_asset_dca_with_pool,
         compute_ma_drawdown_ratio,
@@ -16,6 +17,7 @@ try:
 except ModuleNotFoundError:
     from engine import (  # type: ignore
         BacktestResult,
+        backtest_daily_dca_with_ratios,
         backtest_monthly_dca_with_ratios,
         backtest_two_asset_dca_with_pool,
         compute_ma_drawdown_ratio,
@@ -28,7 +30,11 @@ def _download_one(symbol: str, period: str = "20y") -> Tuple[List[date], List[fl
     except ModuleNotFoundError as e:
         raise SystemExit("Missing dependency: yfinance (install: pip install yfinance)") from e
 
-    hist = yf.Ticker(symbol).history(period=period)
+    try:
+        hist = yf.Ticker(symbol).history(period=period)
+    except Exception as e:
+        raise SystemExit(f"Failed to download {symbol} history: {e}") from e
+
     if len(hist) == 0:
         raise SystemExit(f"No data for {symbol}")
 
@@ -67,6 +73,142 @@ def _ratio_series_ma_drawdown(dates: List[date], closes: List[float], ma_days: i
     return ratios
 
 
+def _ratio_series_ma_drawdown_custom(
+    dates: List[date],
+    closes: List[float],
+    *,
+    ma_days: int,
+    drawdown_5x: float,
+    drawdown_3x: float,
+) -> List[float]:
+    try:
+        import pandas as pd
+    except ModuleNotFoundError as e:
+        raise SystemExit("Missing dependency: pandas (install: pip install pandas)") from e
+
+    s = pd.Series(closes, index=pd.to_datetime(dates))
+    ma = s.rolling(window=int(ma_days)).mean()
+    high_250 = s.rolling(window=250).max()
+    drawdown = (s - high_250) / high_250
+
+    ratios: List[float] = []
+    for i in range(len(s)):
+        if i < max(250, ma_days) or pd.isna(ma.iat[i]) or pd.isna(drawdown.iat[i]):
+            ratios.append(1.0)
+            continue
+        dd = float(drawdown.iat[i])
+        price = float(s.iat[i])
+        ma_i = float(ma.iat[i])
+        if dd <= float(drawdown_5x):
+            ratios.append(5.0)
+        elif dd <= float(drawdown_3x):
+            ratios.append(3.0)
+        elif price < ma_i:
+            ratios.append(2.0)
+        else:
+            ratios.append(1.0)
+    return ratios
+
+
+def _ratio_series_discount_dca(dates: List[date], closes: List[float]) -> List[float]:
+    try:
+        import pandas as pd
+    except ModuleNotFoundError as e:
+        raise SystemExit("Missing dependency: pandas (install: pip install pandas)") from e
+
+    s = pd.Series(closes, index=pd.to_datetime(dates))
+    ma50 = s.rolling(window=50).mean()
+    high_100 = s.rolling(window=100).max()
+    discount = (s - high_100) / high_100
+
+    ratios: List[float] = []
+    for i in range(len(s)):
+        if i < 100 or pd.isna(ma50.iat[i]) or pd.isna(discount.iat[i]):
+            ratios.append(1.0)
+            continue
+        dis = float(discount.iat[i])
+        px = float(s.iat[i])
+        ma_i = float(ma50.iat[i])
+        if dis <= -0.20:
+            ratios.append(4.0)
+        elif dis <= -0.10:
+            ratios.append(2.0)
+        elif px < ma_i:
+            ratios.append(1.5)
+        else:
+            ratios.append(1.0)
+    return ratios
+
+
+def _market_breadth_backtest_series(symbol: str, period: str) -> Tuple[List[date], List[float], List[float]]:
+    try:
+        import pandas as pd
+    except ModuleNotFoundError as e:
+        raise SystemExit("Missing dependency: pandas (install: pip install pandas)") from e
+
+    try:
+        from strategy.market_breadth_dca import NASDAQ100_TICKERS
+    except Exception as e:
+        raise SystemExit(f"Cannot load NASDAQ100 components: {e}") from e
+
+    symbol = (symbol or "QQQ").strip().upper()
+    if symbol != "QQQ":
+        raise SystemExit("market_breadth_dca backtest currently supports symbol=QQQ only")
+
+    tickers = [symbol] + list(dict.fromkeys(NASDAQ100_TICKERS))
+    closes = _download_many(tickers, period=period)
+    if symbol not in closes:
+        raise SystemExit(f"No close series for {symbol}")
+
+    qqq = closes[symbol].rename("qqq").dropna()
+    if len(qqq) < 250:
+        raise SystemExit("Not enough QQQ data for 250-day drawdown")
+
+    comp_series = []
+    for ticker in NASDAQ100_TICKERS:
+        s = closes.get(ticker)
+        if s is None:
+            continue
+        comp_series.append(s.rename(ticker))
+    if not comp_series:
+        raise SystemExit("No component stock data for breadth computation")
+
+    comp_df = pd.concat(comp_series, axis=1)
+    comp_df = comp_df.sort_index()
+    ma20 = comp_df.rolling(window=20).mean()
+    valid_mask = comp_df.notna() & ma20.notna()
+    below_mask = (comp_df < ma20) & valid_mask
+    valid_count = valid_mask.sum(axis=1)
+    below_ratio = below_mask.sum(axis=1) / valid_count.where(valid_count > 0)
+
+    high_250 = qqq.rolling(window=250).max()
+    drawdown = (qqq - high_250) / high_250
+
+    aligned = pd.concat(
+        [qqq.rename("close"), drawdown.rename("drawdown"), below_ratio.rename("below_ratio"), valid_count.rename("n")],
+        axis=1,
+    )
+    aligned = aligned.dropna(subset=["close"])
+
+    ratios: List[float] = []
+    for _, row in aligned.iterrows():
+        dd = float(row["drawdown"]) if row["drawdown"] == row["drawdown"] else 0.0
+        br = float(row["below_ratio"]) if row["below_ratio"] == row["below_ratio"] else 1.0
+        n = int(row["n"]) if row["n"] == row["n"] else 0
+        if dd <= -0.30:
+            ratios.append(5.0)
+        elif n >= 20 and br <= 0.25:
+            ratios.append(3.0)
+        elif dd <= -0.10:
+            ratios.append(2.0)
+        else:
+            ratios.append(1.0)
+
+    dates = list(aligned.index)
+    close_vals = [float(x) for x in aligned["close"].tolist()]
+    return dates, close_vals, ratios
+
+
 def _download_many(symbols: List[str], period: str = "20y"):
     try:
         import yfinance as yf
@@ -78,22 +220,30 @@ def _download_many(symbols: List[str], period: str = "20y"):
     except ModuleNotFoundError as e:
         raise SystemExit("Missing dependency: pandas (install: pip install pandas)") from e
 
-    df = yf.download(
-        tickers=" ".join(symbols),
-        period=period,
-        group_by="ticker",
-        auto_adjust=False,
-        progress=False,
-        threads=True,
-    )
+    try:
+        df = yf.download(
+            tickers=" ".join(symbols),
+            period=period,
+            group_by="ticker",
+            auto_adjust=False,
+            progress=False,
+            threads=True,
+        )
+    except Exception as e:
+        raise SystemExit(f"Failed to download symbols via yfinance: {e}") from e
+
     if df is None or len(df) == 0:
         raise SystemExit("No data returned")
 
-    closes = {}
+    closes: Dict[str, pd.Series] = {}
     for sym in symbols:
-        if sym in df.columns.get_level_values(0):
+        if isinstance(df.columns, pd.MultiIndex):
+            if sym not in df.columns.get_level_values(0):
+                continue
             close = df[sym]["Close"].copy()
         else:
+            if "Close" not in df.columns:
+                continue
             close = df["Close"].copy()
         close.index = pd.to_datetime(close.index).date
         closes[sym] = close
@@ -109,6 +259,9 @@ def _align_two_assets_and_vix(
     import pandas as pd
 
     closes = _download_many([sym_a, sym_b, vix_sym], period=period)
+    if sym_a not in closes or sym_b not in closes or vix_sym not in closes:
+        raise SystemExit(f"Missing close series in download: need {sym_a},{sym_b},{vix_sym}")
+
     a = closes[sym_a].rename("a")
     b = closes[sym_b].rename("b")
     v = closes[vix_sym].rename("vix")
@@ -171,7 +324,8 @@ def _plot_total_return_bar(results: List[BacktestResult], out_path: str) -> None
         ((r.final_value / r.total_invested) - 1.0) * 100.0 if r.total_invested > 0 else 0.0 for r in results
     ]
 
-    plt.figure(figsize=(8, 4.5))
+    width = max(8.0, 1.6 * len(results) + 2.0)
+    plt.figure(figsize=(width, 4.5))
     bars = plt.bar(labels, total_return_pct)
     plt.title("Total Return (Final / Invested - 1)")
     plt.ylabel("Total return (%)")
@@ -338,7 +492,8 @@ def _plot_trailing_3y_xirr_bar(results: List[BacktestResult], out_path: str) -> 
     labels = [f"{r.strategy_key}\n({r.symbol})" for r in results]
     trailing_pct = [(float(r.trailing_3y_xirr) * 100.0) if r.trailing_3y_xirr is not None else 0.0 for r in results]
 
-    plt.figure(figsize=(8, 4.5))
+    width = max(8.0, 1.6 * len(results) + 2.0)
+    plt.figure(figsize=(width, 4.5))
     bars = plt.bar(labels, trailing_pct)
     plt.title("Trailing 3Y Annualized Return (XIRR)")
     plt.ylabel("Annualized return (%)")
@@ -354,17 +509,26 @@ def _plot_trailing_3y_xirr_bar(results: List[BacktestResult], out_path: str) -> 
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Backtest monthly DCA strategies on Nasdaq proxy data (default QQQ).")
+    p = argparse.ArgumentParser(description="Backtest DCA strategies on Nasdaq proxy data (default QQQ).")
     p.add_argument(
         "--strategy",
         default="ma250_drawdown",
-        choices=["ma250_drawdown", "ma150_drawdown", "etf_dca_dip_buy", "all"],
+        choices=[
+            "ma250_drawdown",
+            "ma200_drawdown",
+            "ma150_drawdown",
+            "discount_dca",
+            "market_breadth_dca",
+            "plain_dca",
+            "etf_dca_dip_buy",
+            "all",
+        ],
         help="Strategy key to backtest (use 'all' to run all and plot a comparison).",
     )
     p.add_argument(
         "--symbol",
         default="QQQ",
-        help="For ma250_drawdown/ma150_drawdown: data symbol (QQQ is a common Nasdaq-100 proxy).",
+        help="For single-symbol strategies: data symbol (QQQ is a common Nasdaq-100 proxy).",
     )
     p.add_argument(
         "--symbols",
@@ -375,20 +539,47 @@ def main() -> None:
         "--base-amount",
         type=float,
         default=10000,
-        help="For ma250_drawdown/ma150_drawdown: base monthly contribution amount.",
+        help="For single-symbol strategies: base contribution amount.",
     )
     p.add_argument("--monthly-total", type=float, default=900, help="For etf_dca_dip_buy: total monthly DCA amount in USD.")
     p.add_argument("--annual-pool", type=float, default=4000, help="For etf_dca_dip_buy: annual reserve pool in USD (reset each year).")
     p.add_argument("--weights", default="0.5,0.5", help="For etf_dca_dip_buy: weights, comma-separated (e.g. 0.6,0.4).")
-    p.add_argument("--invest-day", type=int, default=10, help="Calendar day-of-month to invest (1..28).")
+    p.add_argument("--invest-day", type=int, default=10, help="Calendar day-of-month to invest for monthly DCA strategies (1..28).")
     p.add_argument("--period", default="20y", help="Data period (e.g. 20y).")
     p.add_argument("--out-dir", default="backtest", help="Output directory for comparison charts (all-mode).")
     args = p.parse_args()
 
-    if args.strategy in ("ma250_drawdown", "ma150_drawdown", "all"):
-        dates, closes = _download_one(args.symbol, period=args.period)
+    single_symbol_keys = {
+        "ma250_drawdown",
+        "ma200_drawdown",
+        "ma150_drawdown",
+        "discount_dca",
+        "market_breadth_dca",
+        "plain_dca",
+    }
+    need_single_symbol = args.strategy in single_symbol_keys or args.strategy == "all"
+
+    result_map: Dict[str, BacktestResult] = {}
+
+    if need_single_symbol:
+        if args.strategy == "market_breadth_dca":
+            dates, closes, ratios_breadth = _market_breadth_backtest_series(args.symbol, period=args.period)
+        else:
+            dates, closes = _download_one(args.symbol, period=args.period)
+            ratios_breadth = []
+
         ratios_250 = _ratio_series_ma_drawdown(dates, closes, ma_days=250)
-        result_ma250 = backtest_monthly_dca_with_ratios(
+        ratios_200 = _ratio_series_ma_drawdown_custom(
+            dates,
+            closes,
+            ma_days=200,
+            drawdown_5x=-0.25,
+            drawdown_3x=-0.15,
+        )
+        ratios_150 = _ratio_series_ma_drawdown(dates, closes, ma_days=150)
+        ratios_discount = _ratio_series_discount_dca(dates, closes)
+
+        result_map["ma250_drawdown"] = backtest_monthly_dca_with_ratios(
             symbol=args.symbol,
             strategy_key="ma250_drawdown",
             dates=dates,
@@ -398,9 +589,17 @@ def main() -> None:
             invest_day=args.invest_day,
             trailing_years=3,
         )
-
-        ratios_150 = _ratio_series_ma_drawdown(dates, closes, ma_days=150)
-        result_ma150 = backtest_monthly_dca_with_ratios(
+        result_map["ma200_drawdown"] = backtest_monthly_dca_with_ratios(
+            symbol=args.symbol,
+            strategy_key="ma200_drawdown",
+            dates=dates,
+            closes=closes,
+            ratio_for_index=lambda i: ratios_200[i],
+            base_amount=args.base_amount,
+            invest_day=args.invest_day,
+            trailing_years=3,
+        )
+        result_map["ma150_drawdown"] = backtest_monthly_dca_with_ratios(
             symbol=args.symbol,
             strategy_key="ma150_drawdown",
             dates=dates,
@@ -410,12 +609,48 @@ def main() -> None:
             invest_day=args.invest_day,
             trailing_years=3,
         )
+        result_map["discount_dca"] = backtest_monthly_dca_with_ratios(
+            symbol=args.symbol,
+            strategy_key="discount_dca",
+            dates=dates,
+            closes=closes,
+            ratio_for_index=lambda i: ratios_discount[i],
+            base_amount=args.base_amount,
+            invest_day=args.invest_day,
+            trailing_years=3,
+        )
 
-        if args.strategy == "ma250_drawdown":
-            _print_result(result_ma250)
+        if args.strategy == "market_breadth_dca" or args.strategy == "all":
+            if args.strategy != "market_breadth_dca":
+                dates_b, closes_b, ratios_breadth = _market_breadth_backtest_series(args.symbol, period=args.period)
+            else:
+                dates_b, closes_b = dates, closes
+            result_map["market_breadth_dca"] = backtest_monthly_dca_with_ratios(
+                symbol=args.symbol,
+                strategy_key="market_breadth_dca",
+                dates=dates_b,
+                closes=closes_b,
+                ratio_for_index=lambda i: ratios_breadth[i],
+                base_amount=args.base_amount,
+                invest_day=args.invest_day,
+                trailing_years=3,
+            )
+
+        result_map["plain_dca"] = backtest_daily_dca_with_ratios(
+            symbol=args.symbol,
+            strategy_key="plain_dca",
+            dates=dates,
+            closes=closes,
+            ratio_for_index=lambda _i: 1.0,
+            base_amount=args.base_amount,
+            trailing_years=3,
+        )
+
+        if args.strategy in single_symbol_keys and args.strategy != "market_breadth_dca":
+            _print_result(result_map[args.strategy])
             return
-        if args.strategy == "ma150_drawdown":
-            _print_result(result_ma150)
+        if args.strategy == "market_breadth_dca":
+            _print_result(result_map["market_breadth_dca"])
             return
 
     if args.strategy in ("etf_dca_dip_buy", "all"):
@@ -445,13 +680,22 @@ def main() -> None:
             annual_reserve_pool_usd=float(args.annual_pool),
             trailing_years=3,
         )
-        result_dip = replace(result_dip, strategy_key="etf_dca_dip_buy")
+        result_map["etf_dca_dip_buy"] = replace(result_dip, strategy_key="etf_dca_dip_buy")
         if args.strategy == "etf_dca_dip_buy":
-            _print_result(result_dip)
+            _print_result(result_map["etf_dca_dip_buy"])
             return
 
     if args.strategy == "all":
-        results = [result_ma250, result_ma150, result_dip]  # type: ignore[name-defined]
+        ordered_keys = [
+            "ma250_drawdown",
+            "ma200_drawdown",
+            "ma150_drawdown",
+            "discount_dca",
+            "market_breadth_dca",
+            "plain_dca",
+            "etf_dca_dip_buy",
+        ]
+        results = [result_map[k] for k in ordered_keys if k in result_map]
         for r in results:
             _print_result(r)
         plot_dir = str(args.out_dir)

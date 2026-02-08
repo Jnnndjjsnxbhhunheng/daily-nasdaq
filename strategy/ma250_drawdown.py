@@ -12,7 +12,10 @@ def _get_market_data(symbol: str) -> Tuple[Dict[str, float | str] | None, str | 
     print(f"正在获取 {symbol} 的数据...")
 
     ticker = yf.Ticker(symbol)
-    hist = ticker.history(period="2y")
+    try:
+        hist = ticker.history(period="2y")
+    except Exception as e:
+        return None, f"下载行情失败: {e}"
 
     if len(hist) < 250:
         return None, "数据不足，无法计算年线"

@@ -1,67 +1,56 @@
 # Backtest
 
-用过去约 20 年的数据回测定投策略（默认用 `QQQ` 作为纳指 100 的常用代理），并输出：
+使用历史数据回测策略并输出：
 
-- 近 3 年年化收益（`trailing_3y_xirr`，按现金流计算的年化 IRR）
-- 全周期年化收益（`full_period_xirr`）
+- `trailing_3y_xirr`：近 3 年年化收益（现金流口径）
+- `full_period_xirr`：全周期年化收益（现金流口径）
 
 ## 依赖
 
 ```bash
-pip install yfinance pandas
+pip install yfinance pandas matplotlib
 ```
 
-## 运行
+## 支持策略
+
+- `ma250_drawdown`
+- `ma200_drawdown`
+- `ma150_drawdown`
+- `discount_dca`
+- `market_breadth_dca`
+- `plain_dca`（每日固定金额定投）
+- `etf_dca_dip_buy`
+- `all`（一次运行并生成对比图）
+
+## 运行示例
 
 ```bash
 python -m backtest.run_backtest --strategy ma250_drawdown --symbol QQQ --base-amount 10000 --invest-day 10 --period 20y
-```
-
-说明：
-- `--invest-day` 为每月定投的“日”（1..28），会自动匹配到当月第一个 `day>=invest-day` 的交易日。
-
-## 回测三个策略
-
-1) `ma150_drawdown`（单标的，均线改为 MA150）
-
-```bash
+python -m backtest.run_backtest --strategy ma200_drawdown --symbol QQQ --base-amount 10000 --invest-day 10 --period 20y
 python -m backtest.run_backtest --strategy ma150_drawdown --symbol QQQ --base-amount 10000 --invest-day 10 --period 20y
+python -m backtest.run_backtest --strategy discount_dca --symbol QQQ --base-amount 10000 --invest-day 10 --period 20y
+python -m backtest.run_backtest --strategy market_breadth_dca --symbol QQQ --base-amount 10000 --invest-day 10 --period 20y
+python -m backtest.run_backtest --strategy plain_dca --symbol QQQ --base-amount 10000 --period 20y
 ```
 
-2) `ma250_drawdown`（单标的，原策略）
-
-```bash
-python -m backtest.run_backtest --strategy ma250_drawdown --symbol QQQ --base-amount 10000 --invest-day 10 --period 20y
-```
-
-3) `etf_dca_dip_buy`（双标的：每月定投 + 下跌分档加仓）
-
-由于 `VOO/QQQM` 上市时间不够 20 年，回测默认使用长历史代理：
-- `SPY` 代理 `VOO`
-- `QQQ` 代理 `QQQM`
+双 ETF 策略（20 年回测常用代理：`SPY->VOO`, `QQQ->QQQM`）：
 
 ```bash
 python -m backtest.run_backtest --strategy etf_dca_dip_buy --symbols SPY,QQQ --monthly-total 900 --annual-pool 4000 --weights 0.5,0.5 --invest-day 10 --period 20y
 ```
 
-## 对比图（柱状）
-
-一次性跑三个策略并生成对比柱状图：
+## 生成对比图
 
 ```bash
 python -m backtest.run_backtest --strategy all --symbol QQQ --base-amount 10000 --symbols SPY,QQQ --monthly-total 900 --annual-pool 4000 --weights 0.5,0.5 --invest-day 10 --period 20y --out-dir backtest
 ```
 
-会在输出目录生成两张柱状对比图：
-- `total_return_compare.png`：总收益率（`final_value / total_invested - 1`）
-- `trailing_3y_xirr_compare.png`：近3年年化（`trailing_3y_xirr`）
-以及一张“每年年化（XIRR）对比折线 + 表格”：
-- `yearly_xirr_compare.png`：图片下半部分会列出近20年每年单年化
+输出文件：
+- `yearly_xirr_compare.png`
+- `total_return_compare.png`
+- `trailing_3y_xirr_compare.png`
 
-如需生成图片，请先安装：
-
-```bash
-pip install matplotlib
-```
-
-注：如果对比图与代码不一致（例如新增/调整策略），请在可联网环境重新运行一次 `--strategy all` 覆盖生成图片。
+说明：
+- `--invest-day` 仅用于按“月定投”的策略（1..28）
+- `plain_dca` 是“每个交易日都投固定金额”，不使用 `--invest-day`
+- Yahoo 数据源可能触发限流（`YFRateLimitError`），建议稍后重试

@@ -199,6 +199,65 @@ def backtest_monthly_dca_with_ratios(
     )
 
 
+def backtest_daily_dca_with_ratios(
+    *,
+    symbol: str,
+    strategy_key: str,
+    dates: Sequence[date],
+    closes: Sequence[float],
+    ratio_for_index: Callable[[int], float],
+    base_amount: float,
+    trailing_years: int = 3,
+) -> BacktestResult:
+    if len(dates) != len(closes):
+        raise ValueError("dates and closes length mismatch")
+    if len(dates) == 0:
+        raise ValueError("empty price series")
+
+    shares = 0.0
+    cashflows: List[Cashflow] = []
+    total_invested = 0.0
+    daily_values: List[Tuple[date, float]] = []
+
+    for i, d in enumerate(dates):
+        px = float(closes[i])
+        daily_values.append((d, shares * px))
+
+        ratio = float(ratio_for_index(i))
+        amount = float(base_amount) * ratio
+        if px <= 0:
+            continue
+        shares += amount / px
+        total_invested += amount
+        cashflows.append((d, -amount))
+        daily_values[-1] = (d, shares * px)
+
+    end = dates[-1]
+    final_value = shares * float(closes[-1])
+    cashflows_end = cashflows + [(end, final_value)]
+
+    full_xirr = xirr(cashflows_end)
+
+    trailing_start = end - timedelta(days=int(trailing_years * 365.25))
+    trailing_cashflows = [(d, cf) for d, cf in cashflows if d >= trailing_start] + [(end, final_value)]
+    trailing_xirr = xirr(trailing_cashflows)
+
+    yearly = yearly_xirr_from_cashflows(cashflows=cashflows, daily_values=daily_values)
+
+    return BacktestResult(
+        symbol=symbol,
+        strategy_key=strategy_key,
+        start=dates[0],
+        end=end,
+        total_invested=total_invested,
+        final_value=final_value,
+        shares=shares,
+        yearly_xirr=yearly,
+        trailing_3y_xirr=trailing_xirr,
+        full_period_xirr=full_xirr,
+    )
+
+
 def backtest_two_asset_dca_with_pool(
     *,
     symbols: Tuple[str, str],
