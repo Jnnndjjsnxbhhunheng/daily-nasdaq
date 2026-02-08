@@ -104,41 +104,6 @@ def yearly_xirr_from_cashflows(
     return results
 
 
-def trailing_xirr_from_cashflows(
-    *,
-    cashflows: Sequence[Cashflow],
-    daily_values: Sequence[Tuple[date, float]],
-    trailing_years: int = 3,
-) -> float | None:
-    if not daily_values:
-        return None
-
-    end_d, end_v = daily_values[-1]
-    trailing_start = end_d - timedelta(days=int(trailing_years * 365.25))
-
-    start_idx = 0
-    for i, (d, _v) in enumerate(daily_values):
-        if d >= trailing_start:
-            start_idx = i
-            break
-
-    start_d, start_v = daily_values[start_idx]
-    cfs = [(d, cf) for d, cf in cashflows if start_d <= d <= end_d]
-
-    trailing_cfs: List[Cashflow] = []
-    if float(start_v) > 0:
-        trailing_cfs.append((start_d, -float(start_v)))
-    trailing_cfs.extend(cfs)
-    trailing_cfs.append((end_d, float(end_v)))
-
-    r = xirr(trailing_cfs)
-    if r is not None:
-        return r
-
-    fallback_cfs = [(d, cf) for d, cf in cashflows if d >= trailing_start] + [(end_d, float(end_v))]
-    return xirr(fallback_cfs)
-
-
 def monthly_invest_dates(trading_dates: Sequence[date], invest_day: int = 10) -> List[date]:
     if not trading_dates:
         return []
@@ -214,11 +179,9 @@ def backtest_monthly_dca_with_ratios(
 
     full_xirr = xirr(cashflows_end)
 
-    trailing_xirr = trailing_xirr_from_cashflows(
-        cashflows=cashflows,
-        daily_values=daily_values,
-        trailing_years=trailing_years,
-    )
+    trailing_start = end - timedelta(days=int(trailing_years * 365.25))
+    trailing_cashflows = [(d, cf) for d, cf in cashflows if d >= trailing_start] + [(end, final_value)]
+    trailing_xirr = xirr(trailing_cashflows)
 
     yearly = yearly_xirr_from_cashflows(cashflows=cashflows, daily_values=daily_values)
 
@@ -275,11 +238,9 @@ def backtest_daily_dca_with_ratios(
 
     full_xirr = xirr(cashflows_end)
 
-    trailing_xirr = trailing_xirr_from_cashflows(
-        cashflows=cashflows,
-        daily_values=daily_values,
-        trailing_years=trailing_years,
-    )
+    trailing_start = end - timedelta(days=int(trailing_years * 365.25))
+    trailing_cashflows = [(d, cf) for d, cf in cashflows if d >= trailing_start] + [(end, final_value)]
+    trailing_xirr = xirr(trailing_cashflows)
 
     yearly = yearly_xirr_from_cashflows(cashflows=cashflows, daily_values=daily_values)
 
@@ -382,11 +343,9 @@ def backtest_two_asset_dca_with_pool(
 
     full_xirr = xirr(cashflows_end)
 
-    trailing_xirr = trailing_xirr_from_cashflows(
-        cashflows=cashflows,
-        daily_values=daily_values,
-        trailing_years=trailing_years,
-    )
+    trailing_start = end - timedelta(days=int(trailing_years * 365.25))
+    trailing_cashflows = [(d, cf) for d, cf in cashflows if d >= trailing_start] + [(end, final_value)]
+    trailing_xirr = xirr(trailing_cashflows)
 
     yearly = yearly_xirr_from_cashflows(cashflows=cashflows, daily_values=daily_values)
 
