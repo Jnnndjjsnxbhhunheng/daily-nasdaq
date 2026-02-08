@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
-from datetime import date
+from datetime import date, timedelta
 import os
 from typing import Dict, List, Tuple
 
@@ -24,23 +24,109 @@ except ModuleNotFoundError:
     )
 
 
+
+def _period_to_cutoff_date(period: str) -> date | None:
+    p = (period or "").strip().lower()
+    if p.endswith("y") and p[:-1].isdigit():
+        years = int(p[:-1])
+        return date.today() - timedelta(days=int(years * 365.25))
+    return None
+
+
+def _stooq_symbol(symbol: str) -> str:
+    sym = (symbol or "").strip()
+    if sym.startswith("^"):
+        return sym.lower()
+    return f"{sym.lower()}.us"
+
+
+def _read_csv_url(url: str, timeout: float = 12.0):
+    import pandas as pd
+    from io import StringIO
+    from urllib.request import urlopen
+
+    with urlopen(url, timeout=timeout) as resp:
+        raw = resp.read().decode("utf-8", errors="ignore")
+    return pd.read_csv(StringIO(raw))
+
+
+def _download_close_from_stooq(symbol: str, period: str):
+    import pandas as pd
+    from urllib.parse import quote
+
+    stooq_sym = _stooq_symbol(symbol)
+    url = f"https://stooq.com/q/d/l/?s={quote(stooq_sym)}&i=d"
+    df = _read_csv_url(url)
+    if df is None or len(df) == 0 or "Date" not in df.columns or "Close" not in df.columns:
+        raise ValueError(f"No stooq data for {symbol}")
+
+    df = df[["Date", "Close"]].copy()
+    df["Date"] = pd.to_datetime(df["Date"]).dt.date
+    df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
+    df = df.dropna(subset=["Close"]).sort_values("Date")
+
+    cutoff = _period_to_cutoff_date(period)
+    if cutoff is not None:
+        df = df[df["Date"] >= cutoff]
+
+    s = pd.Series(df["Close"].astype(float).values, index=df["Date"], name=symbol)
+    if len(s) == 0:
+        raise ValueError(f"No stooq rows after period filter for {symbol}")
+    return s
+
+
+def _download_vix_from_fred(period: str):
+    import pandas as pd
+
+    url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=VIXCLS"
+    df = _read_csv_url(url)
+    if df is None or len(df) == 0 or "VIXCLS" not in df.columns:
+        raise ValueError("No VIX data from FRED")
+
+    date_col = "DATE" if "DATE" in df.columns else "observation_date" if "observation_date" in df.columns else None
+    if date_col is None:
+        raise ValueError("No date column in FRED VIX data")
+
+    df = df[[date_col, "VIXCLS"]].copy()
+    df[date_col] = pd.to_datetime(df[date_col]).dt.date
+    df["VIXCLS"] = pd.to_numeric(df["VIXCLS"], errors="coerce")
+    df = df.dropna(subset=["VIXCLS"]).sort_values(date_col)
+
+    cutoff = _period_to_cutoff_date(period)
+    if cutoff is not None:
+        df = df[df[date_col] >= cutoff]
+
+    s = pd.Series(df["VIXCLS"].astype(float).values, index=df[date_col], name="^VIX")
+    if len(s) == 0:
+        raise ValueError("No VIX rows after period filter")
+    return s
+
+
 def _download_one(symbol: str, period: str = "20y") -> Tuple[List[date], List[float]]:
+    hist = None
+    yf_error: Exception | None = None
+
     try:
         import yfinance as yf
-    except ModuleNotFoundError as e:
-        raise SystemExit("Missing dependency: yfinance (install: pip install yfinance)") from e
 
-    try:
         hist = yf.Ticker(symbol).history(period=period)
     except Exception as e:
-        raise SystemExit(f"Failed to download {symbol} history: {e}") from e
+        yf_error = e
 
-    if len(hist) == 0:
-        raise SystemExit(f"No data for {symbol}")
+    if hist is not None and len(hist) > 0:
+        dates = [d.date() for d in hist.index.to_pydatetime()]
+        closes = [float(x) for x in hist["Close"].tolist()]
+        return dates, closes
 
-    dates = [d.date() for d in hist.index.to_pydatetime()]
-    closes = [float(x) for x in hist["Close"].tolist()]
-    return dates, closes
+    try:
+        s = _download_close_from_stooq(symbol, period=period)
+        dates = list(s.index)
+        closes = [float(x) for x in s.tolist()]
+        return dates, closes
+    except Exception as e:
+        if yf_error is not None:
+            raise SystemExit(f"Failed to download {symbol} history. yfinance: {yf_error}; stooq: {e}") from e
+        raise SystemExit(f"Failed to download {symbol} history from fallback source: {e}") from e
 
 
 def _ratio_series_ma_drawdown(dates: List[date], closes: List[float], ma_days: int) -> List[float]:
@@ -211,16 +297,16 @@ def _market_breadth_backtest_series(symbol: str, period: str) -> Tuple[List[date
 
 def _download_many(symbols: List[str], period: str = "20y"):
     try:
-        import yfinance as yf
-    except ModuleNotFoundError as e:
-        raise SystemExit("Missing dependency: yfinance (install: pip install yfinance)") from e
-
-    try:
         import pandas as pd
     except ModuleNotFoundError as e:
         raise SystemExit("Missing dependency: pandas (install: pip install pandas)") from e
 
+    closes: Dict[str, pd.Series] = {}
+    yf_error: Exception | None = None
+
     try:
+        import yfinance as yf
+
         df = yf.download(
             tickers=" ".join(symbols),
             period=period,
@@ -229,24 +315,63 @@ def _download_many(symbols: List[str], period: str = "20y"):
             progress=False,
             threads=True,
         )
+        if df is not None and len(df) > 0:
+            for sym in symbols:
+                if isinstance(df.columns, pd.MultiIndex):
+                    if sym not in df.columns.get_level_values(0):
+                        continue
+                    close = df[sym]["Close"].copy()
+                else:
+                    if "Close" not in df.columns:
+                        continue
+                    close = df["Close"].copy()
+                close.index = pd.to_datetime(close.index).date
+                close = close.dropna()
+                if len(close) > 0:
+                    closes[sym] = close
     except Exception as e:
-        raise SystemExit(f"Failed to download symbols via yfinance: {e}") from e
+        yf_error = e
 
-    if df is None or len(df) == 0:
+    missing_symbols = [sym for sym in symbols if sym not in closes]
+
+    if missing_symbols:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _fetch_one(sym: str):
+            if sym.upper() == "^VIX":
+                return sym, _download_vix_from_fred(period=period)
+            return sym, _download_close_from_stooq(sym, period=period)
+
+        workers = min(12, max(1, len(missing_symbols)))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            future_map = {ex.submit(_fetch_one, sym): sym for sym in missing_symbols}
+            for fut in as_completed(future_map):
+                sym = future_map[fut]
+                try:
+                    _sym, close = fut.result()
+                    closes[_sym] = close
+                except Exception:
+                    continue
+
+        if len(symbols) <= 5:
+            still_missing = [sym for sym in symbols if sym not in closes]
+            for sym in still_missing:
+                for _ in range(2):
+                    try:
+                        if sym.upper() == "^VIX":
+                            close = _download_vix_from_fred(period=period)
+                        else:
+                            close = _download_close_from_stooq(sym, period=period)
+                        closes[sym] = close
+                        break
+                    except Exception:
+                        continue
+
+    if not closes:
+        if yf_error is not None:
+            raise SystemExit(f"No data returned from yfinance ({yf_error}) or fallback sources") from yf_error
         raise SystemExit("No data returned")
 
-    closes: Dict[str, pd.Series] = {}
-    for sym in symbols:
-        if isinstance(df.columns, pd.MultiIndex):
-            if sym not in df.columns.get_level_values(0):
-                continue
-            close = df[sym]["Close"].copy()
-        else:
-            if "Close" not in df.columns:
-                continue
-            close = df["Close"].copy()
-        close.index = pd.to_datetime(close.index).date
-        closes[sym] = close
     return closes
 
 
