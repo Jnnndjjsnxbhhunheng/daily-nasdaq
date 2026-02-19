@@ -107,6 +107,12 @@ python -m backtest.run_backtest --strategy etf_dca_dip_buy --symbols SPY,QQQ --m
 python -m backtest.run_backtest --strategy all --symbol QQQ --base-amount 10000 --symbols SPY,QQQ --monthly-total 900 --annual-pool 4000 --weights 0.5,0.5 --invest-day 10 --period 20y --out-dir backtest
 ```
 
+如需给前端看板使用（导出 JSON）：
+
+```bash
+python -m backtest.run_backtest --strategy all --symbol QQQ --base-amount 10000 --symbols SPY,QQQ --monthly-total 900 --annual-pool 4000 --weights 0.5,0.5 --invest-day 10 --period 20y --out-dir backtest --json-out frontend/data/backtest_dashboard.json
+```
+
 会生成：
 - `backtest/yearly_xirr_compare.png`
 - `backtest/total_return_compare.png`
@@ -127,3 +133,18 @@ python -m backtest.run_backtest --strategy all --symbol QQQ --base-amount 10000 
 ![trailing_3y_xirr_compare](backtest/trailing_3y_xirr_compare.png)
 
 > 注：Yahoo 数据源可能出现限流（`YFRateLimitError`），如遇到可稍后重试。
+
+## 前端看板
+
+已提供独立前端目录：`frontend/`
+
+- 页面：`frontend/index.html`
+- 说明：`frontend/README.md`
+
+快速打开：
+
+```bash
+python -m http.server 8000
+```
+
+然后访问：`http://localhost:8000/frontend/`

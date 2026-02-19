@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Daily Nasdaq 策略回测看板</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  </head>
+  <body>
+    <div class="page">
+      <header class="topbar">
+        <div>
+          <h1>Daily Nasdaq 策略回测看板</h1>
+          <p>可查看每个策略回测、收益率，并在同一图表中对比全部策略</p>
+        </div>
+        <div class="meta" id="metaInfo">数据加载中...</div>
+      </header>
+
+      <div class="layout">
+        <aside class="side-panel">
+          <div class="panel-title">策略列表</div>
+          <div class="panel-tools">
+            <button id="showAllBtn" class="tool-btn" type="button">全选图表</button>
+            <button id="hideAllBtn" class="tool-btn" type="button">仅看当前</button>
+          </div>
+          <div id="visibleHint" class="panel-hint"></div>
+          <div id="strategyList" class="strategy-list"></div>
+        </aside>
+
+        <main class="main-panel">
+          <section class="card metrics" id="metricCards"></section>
+
+          <section class="card">
+            <div class="card-head">
+              <h2>年度 XIRR 对比（所有策略同图）</h2>
+              <p>点击左侧策略后会高亮该策略曲线</p>
+            </div>
+            <div class="chart-wrap">
+              <canvas id="xirrChart"></canvas>
+            </div>
+          </section>
+
+          <section class="chart-grid">
+            <article class="card">
+              <div class="card-head">
+                <h2>总收益率对比（柱状图）</h2>
+                <p>单位：%</p>
+              </div>
+              <div class="chart-wrap chart-wrap-small">
+                <canvas id="totalReturnChart"></canvas>
+              </div>
+            </article>
+
+            <article class="card">
+              <div class="card-head">
+                <h2>近三年 XIRR 对比（柱状图）</h2>
+                <p>单位：%</p>
+              </div>
+              <div class="chart-wrap chart-wrap-small">
+                <canvas id="trailingXirrChart"></canvas>
+              </div>
+            </article>
+          </section>
+
+          <section class="card">
+            <div class="card-head">
+              <h2 id="yearlyTitle">策略年度收益明细</h2>
+            </div>
+            <div class="table-wrap">
+              <table id="yearlyTable">
+                <thead>
+                  <tr>
+                    <th>年份</th>
+                    <th>年度 XIRR</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </section>
+        </main>
+      </div>
+
+      <div class="status" id="status"></div>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+  </html>

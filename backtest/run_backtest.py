@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
+import json
 import os
 from typing import Dict, List, Tuple
 
@@ -43,11 +44,30 @@ def _stooq_symbol(symbol: str) -> str:
 def _read_csv_url(url: str, timeout: float = 12.0):
     import pandas as pd
     from io import StringIO
-    from urllib.request import urlopen
+    import time
+    from urllib.request import Request, urlopen
 
-    with urlopen(url, timeout=timeout) as resp:
-        raw = resp.read().decode("utf-8", errors="ignore")
-    return pd.read_csv(StringIO(raw))
+    retries = 4
+    last_error: Exception | None = None
+    for attempt in range(retries):
+        try:
+            req = Request(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (compatible; daily_nasdaq/1.0; +https://github.com/openai/codex)"
+                },
+            )
+            with urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8", errors="ignore")
+            return pd.read_csv(StringIO(raw))
+        except Exception as e:
+            last_error = e
+            if attempt < retries - 1:
+                time.sleep(0.6 * (attempt + 1))
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError(f"Failed to read csv from {url}")
 
 
 def _download_close_from_stooq(symbol: str, period: str):
@@ -355,6 +375,15 @@ def _market_breadth_backtest_series(symbol: str, period: str) -> Tuple[List[date
     tickers = [symbol] + list(dict.fromkeys(NASDAQ100_TICKERS))
     closes = _download_many(tickers, period=period)
     if symbol not in closes:
+        try:
+            closes[symbol] = _download_close_from_stooq(symbol, period=period)
+        except Exception:
+            try:
+                dates_one, closes_one = _download_one(symbol, period=period)
+                closes[symbol] = pd.Series(closes_one, index=dates_one, name=symbol)
+            except Exception:
+                pass
+    if symbol not in closes:
         raise SystemExit(f"No close series for {symbol}")
 
     qqq = closes[symbol].rename("qqq").dropna()
@@ -453,7 +482,7 @@ def _download_many(symbols: List[str], period: str = "20y"):
                 return sym, _download_vix_from_fred(period=period)
             return sym, _download_close_from_stooq(sym, period=period)
 
-        workers = min(12, max(1, len(missing_symbols)))
+        workers = min(4, max(1, len(missing_symbols)))
         with ThreadPoolExecutor(max_workers=workers) as ex:
             future_map = {ex.submit(_fetch_one, sym): sym for sym in missing_symbols}
             for fut in as_completed(future_map):
@@ -542,6 +571,49 @@ def _print_result(r: BacktestResult) -> None:
         print("yearly_xirr:")
         for y in sorted(r.yearly_xirr):
             print(f"  {y}: {pct(r.yearly_xirr[y])}")
+
+
+def _result_to_dashboard_dict(r: BacktestResult) -> Dict[str, object]:
+    yearly_xirr = {
+        str(year): (None if value is None else float(value))
+        for year, value in sorted(r.yearly_xirr.items())
+    }
+    total_return = (r.final_value / r.total_invested - 1.0) if r.total_invested > 0 else 0.0
+    multiple = (r.final_value / r.total_invested) if r.total_invested > 0 else 0.0
+    return {
+        "strategy": r.strategy_key,
+        "symbol": r.symbol,
+        "start": r.start.isoformat(),
+        "end": r.end.isoformat(),
+        "total_invested": float(r.total_invested),
+        "final_value": float(r.final_value),
+        "total_return": float(total_return),
+        "multiple": float(multiple),
+        "shares": float(r.shares),
+        "trailing_3y_xirr": None if r.trailing_3y_xirr is None else float(r.trailing_3y_xirr),
+        "full_period_xirr": None if r.full_period_xirr is None else float(r.full_period_xirr),
+        "yearly_xirr": yearly_xirr,
+    }
+
+
+def _export_dashboard_json(*, results: List[BacktestResult], out_path: str, strategy: str, period: str) -> None:
+    if not out_path:
+        return
+    parent = os.path.dirname(out_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+    payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "strategy": strategy,
+        "period": period,
+        "count": len(results),
+        "strategies": [_result_to_dashboard_dict(r) for r in results],
+    }
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    print(f">> Saved dashboard json: {out_path}")
 
 
 def _plot_total_return_bar(results: List[BacktestResult], out_path: str) -> None:
@@ -786,6 +858,7 @@ def main() -> None:
     p.add_argument("--invest-day", type=int, default=10, help="Calendar day-of-month to invest for monthly DCA strategies (1..28).")
     p.add_argument("--period", default="20y", help="Data period (e.g. 20y).")
     p.add_argument("--out-dir", default="backtest", help="Output directory for comparison charts (all-mode).")
+    p.add_argument("--json-out", default="", help="Optional output JSON path for frontend dashboard data.")
     args = p.parse_args()
 
     single_symbol_keys = {
@@ -919,10 +992,14 @@ def main() -> None:
         )
 
         if args.strategy in single_symbol_keys and args.strategy != "market_breadth_dca":
-            _print_result(result_map[args.strategy])
+            selected = result_map[args.strategy]
+            _print_result(selected)
+            _export_dashboard_json(results=[selected], out_path=str(args.json_out), strategy=args.strategy, period=args.period)
             return
         if args.strategy == "market_breadth_dca":
-            _print_result(result_map["market_breadth_dca"])
+            selected = result_map["market_breadth_dca"]
+            _print_result(selected)
+            _export_dashboard_json(results=[selected], out_path=str(args.json_out), strategy=args.strategy, period=args.period)
             return
 
     if args.strategy in ("etf_dca_dip_buy", "all"):
@@ -954,7 +1031,9 @@ def main() -> None:
         )
         result_map["etf_dca_dip_buy"] = replace(result_dip, strategy_key="etf_dca_dip_buy")
         if args.strategy == "etf_dca_dip_buy":
-            _print_result(result_map["etf_dca_dip_buy"])
+            selected = result_map["etf_dca_dip_buy"]
+            _print_result(selected)
+            _export_dashboard_json(results=[selected], out_path=str(args.json_out), strategy=args.strategy, period=args.period)
             return
 
     if args.strategy == "all":
@@ -977,6 +1056,7 @@ def main() -> None:
         _plot_yearly_xirr_line_with_table(results, out_path=os.path.join(plot_dir, "yearly_xirr_compare.png"))
         _plot_total_return_bar(results, out_path=os.path.join(plot_dir, "total_return_compare.png"))
         _plot_trailing_3y_xirr_bar(results, out_path=os.path.join(plot_dir, "trailing_3y_xirr_compare.png"))
+        _export_dashboard_json(results=results, out_path=str(args.json_out), strategy=args.strategy, period=args.period)
         return
 
     raise SystemExit(f"Unsupported strategy: {args.strategy}")

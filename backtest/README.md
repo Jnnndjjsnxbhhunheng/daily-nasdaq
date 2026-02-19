@@ -45,10 +45,17 @@ python -m backtest.run_backtest --strategy etf_dca_dip_buy --symbols SPY,QQQ --m
 python -m backtest.run_backtest --strategy all --symbol QQQ --base-amount 10000 --symbols SPY,QQQ --monthly-total 900 --annual-pool 4000 --weights 0.5,0.5 --invest-day 10 --period 20y --out-dir backtest
 ```
 
+生成前端看板 JSON：
+
+```bash
+python -m backtest.run_backtest --strategy all --symbol QQQ --base-amount 10000 --symbols SPY,QQQ --monthly-total 900 --annual-pool 4000 --weights 0.5,0.5 --invest-day 10 --period 20y --out-dir backtest --json-out frontend/data/backtest_dashboard.json
+```
+
 输出文件：
 - `yearly_xirr_compare.png`
 - `total_return_compare.png`
 - `trailing_3y_xirr_compare.png`
+- `frontend/data/backtest_dashboard.json`（若使用 `--json-out`）
 
 说明：
 - `--invest-day` 仅用于按“月定投”的策略（1..28）
